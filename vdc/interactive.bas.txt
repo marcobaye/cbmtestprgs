@@ -1,0 +1,131 @@
+	bank 15
+	vv = peek(dec("d600")) and 7
+	graphic 0
+	print "{down}vdc version is" vv
+	print "switch monitor to vdc!{down}"
+	slow
+	graphic 5
+	wx = dec("cdcc"):rem write a to vdc reg x
+	rx = dec("cdda"):rem read vdc reg x
+	ch = 8:rem character height (r23)
+	cw = 8:rem character width (r22:3210)
+	dd = 87:rem display disable (r35)
+	de = 6:rem display enable (r34)
+	fb = 0:rem flag for bitmap (r25:7)
+	fs = 0:rem flag for semi graphics (r25:5)
+	ll = 78:rem line length (r1)
+	li = 1:rem line increment (r27)
+	xs = 0:rem xscroll (v0 vdc)
+	ys = 0:rem yscroll
+	if vv then ll = 79:xs = 7:rem adjust for v1/v2 vdcs
+
+	rem prepare vdc screen
+	color 6, 2
+	print chr$(142):rem uppercase and graphics for char in home pos
+	print "{home}{home}{blk}{clr}{CBM-+}{rvon}{CBM-+}{swlc}" chr$(27) "r
+	print "{rvon}{CBM-+}{rvof}{CBM-+}   vdc version is" vv "{down}"
+	for a = 0 to 240 step 16
+		poke 241, a
+		print "{blk}@{wht}a{red}b{cyn}c{pur}d{grn}e{blu}f{yel}g{orng}h{brn}i{lred}j{gry1}k{gry2}l{lgrn}m{lblu}n{gry3}o{rvon}{blk}@{wht}a{red}b{cyn}c{pur}d{grn}e{blu}f{yel}g{orng}h{brn}i{lred}j{gry1}k{gry2}l{lgrn}m{lblu}n{gry3}o{rvof}";
+		poke 241, 128
+		print a
+	next
+	print "{down} use cursor keys to scroll,
+	print " letters to decrease values,
+	print " with shift to increase.
+	window 40, 0, 79, 24, 1
+	print "{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}"
+	print "    x scroll:
+	print "    y scroll:
+	print "w - r22lo, char width:
+	print "h - r23, char height-1:
+	print "l - r1, line length:
+	print "i - r27, line increment:
+	print "e - r34, enable disp:
+	print "d - r35, disable disp:
+	print "flags:
+	print "b - bitmap:
+	print "s - semigraphics:
+	rem show all values
+	gosub 250
+	gosub 350
+	gosub 450
+	gosub 550
+	gosub 650
+	gosub 750
+	gosub 850
+	gosub 950
+	gosub 1050
+	gosub 1150
+	sys wx, de, 34
+	sys wx, dd, 35
+	sys wx, ll, 1:sys wx, li, 27
+	sys dec("cd6f"):rem enable cursor
+	do
+		print "{home}";:rem put hw cursor where we can see it
+		getkey a$
+		a = instr("{up}{down}{left}{rght}bslLiIeEdDhHwW", a$)
+		on a gosub 200,210,300,310,400,500,600,610,700,710,800,810,900,910,1000,1010,1100,1110
+	loop
+
+200	ys = (ys + 2) and 31:rem up
+210	ys = (ys - 1) and 31:rem down
+	sys wx, 64 + 32 + ys, 24:rem revs, slowflash
+250	char 1, 24, 2:print ys "{left}  "
+	return
+
+300	xs = (xs - 2) and 15:rem left
+310	xs = (xs + 1) and 15:rem right
+	gosub 575
+350	char 1, 24, 1:print xs "{left}  "
+	return
+
+400	fb = 128 - fb:rem toggle bitmap flag
+	gosub 575
+450	char 1, 24, 10:print fb "{left}  "
+	return
+
+500	fs = 32 - fs:rem toggle semi graphics
+	gosub 575
+550	char 1, 24, 11:print fs "{left}  "
+	return
+
+575	sys wx, fb + 64 + fs + xs, 25:rem bitmap, attr, semi
+	return
+
+600	ll = (ll - 2) and 255:rem line length
+610	ll = (ll + 1) and 255
+	sys wx, ll, 1
+650	char 1, 24, 5:print ll "{left}  "
+	return
+
+700	li = (li - 2) and 255:rem line increment
+710	li = (li + 1) and 255
+	sys wx, li, 27
+750	char 1, 24, 6:print li "{left}  "
+	return
+
+800	de = (de - 2) and 255:rem display enable
+810	de = (de + 1) and 255
+	sys wx, de, 34
+850	char 1, 24, 7:print de "{left}  "
+	return
+
+900	dd = (dd - 2) and 255:rem display disable
+910	dd = (dd + 1) and 255
+	sys wx, dd, 35
+950	char 1, 24, 8:print dd "{left}  "
+	return
+
+1000	ch = (ch - 2) and 31:rem character height
+1010	ch = (ch + 1) and 31
+	sys wx, ch, 23
+1050	char 1, 24, 4:print ch "{left}  "
+	return
+
+1100	cw = (cw - 2) and 15:rem character width
+1110	cw = (cw + 1) and 15
+	sys rx,, 22:rreg a:a = a and 240
+	sys wx, a + cw, 22
+1150	char 1, 24, 3:print cw "{left}  "
+	return
