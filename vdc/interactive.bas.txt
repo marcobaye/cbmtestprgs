@@ -12,6 +12,7 @@
 	dd = 87:rem display disable (r35)
 	de = 6:rem display enable (r34)
 	fb = 0:rem flag for bitmap (r25:7)
+	fr = 64:rem flag for reverse (24:6)
 	fs = 0:rem flag for semi graphics (r25:5)
 	ll = 78:rem line length (r1)
 	li = 1:rem line increment (r27)
@@ -45,33 +46,43 @@
 	print "d - r35, disable disp:
 	print "flags:
 	print "b - bitmap:
+	print "r - reverse:
 	print "s - semigraphics:
 	rem show all values
-	gosub 250
-	gosub 350
-	gosub 450
-	gosub 550
-	gosub 650
-	gosub 750
-	gosub 850
-	gosub 950
-	gosub 1050
-	gosub 1150
+	gosub 250:rem yscroll
+	gosub 270:rem reverse flag
+	gosub 350:rem xscroll
+	gosub 450:rem bitmap flag
+	gosub 550:rem semigraphics flag
+	gosub 650:rem line length
+	gosub 750:rem line increment
+	gosub 850:rem display enable
+	gosub 950:rem display disable
+	gosub 1050:rem char height
+	gosub 1150:rem char width
 	sys wx, de, 34
 	sys wx, dd, 35
 	sys wx, ll, 1:sys wx, li, 27
 	sys dec("cd6f"):rem enable cursor
 	do
-		print "{home}";:rem put hw cursor where we can see it
+		print "{home}{left}";:rem put hw cursor where we can see it and make sure the next HOME does not cancel window definition
 		getkey a$
-		a = instr("{up}{down}{left}{rght}bslLiIeEdDhHwW", a$)
-		on a gosub 200,210,300,310,400,500,600,610,700,710,800,810,900,910,1000,1010,1100,1110
+		a = instr("{up}{down}r{left}{rght}bslLiIeEdDhHwW", a$)
+		on a gosub 200,210,260,300,310,400,500,600,610,700,710,800,810,900,910,1000,1010,1100,1110
 	loop
 
 200	ys = (ys + 2) and 31:rem up
 210	ys = (ys - 1) and 31:rem down
-	sys wx, 64 + 32 + ys, 24:rem revs, slowflash
+	gosub 275
 250	char 1, 24, 2:print ys "{left}  "
+	return
+
+260	fr = 64 - fr:rem toggle reverse flag
+	gosub 275
+270	char 1, 24, 11:print fr "{left}  "
+	return
+
+275	sys wx, fr + 32 + ys, 24:rem slowflash
 	return
 
 300	xs = (xs - 2) and 15:rem left
@@ -87,7 +98,7 @@
 
 500	fs = 32 - fs:rem toggle semi graphics
 	gosub 575
-550	char 1, 24, 11:print fs "{left}  "
+550	char 1, 24, 12:print fs "{left}  "
 	return
 
 575	sys wx, fb + 64 + fs + xs, 25:rem bitmap, attr, semi
