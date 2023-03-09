@@ -3,7 +3,7 @@
 	graphic 0
 	print "{down}vdc version is" vv
 	print "switch monitor to vdc!{down}"
-	slow
+	slow:rem make sure use can see vdc version output on vic
 	graphic 5
 	wx = dec("cdcc"):rem write a to vdc reg x
 	rx = dec("cdda"):rem read vdc reg x
@@ -12,10 +12,11 @@
 	dd = 87:rem display disable (r35)
 	de = 6:rem display enable (r34)
 	fb = 0:rem flag for bitmap (r25:7)
-	fr = 64:rem flag for reverse (24:6)
+	fr = 64:rem flag for reverse (r24:6)
 	fs = 0:rem flag for semi graphics (r25:5)
 	ll = 78:rem line length (r1)
 	li = 1:rem line increment (r27)
+	ul = 7:rem underline (r29)
 	xs = 0:rem xscroll (v0 vdc)
 	ys = 0:rem yscroll
 	if vv then ll = 79:xs = 7:rem adjust for v1/v2 vdcs
@@ -24,7 +25,7 @@
 	color 6, 2
 	print chr$(142):rem uppercase and graphics for char in home pos
 	print "{home}{home}{blk}{clr}{CBM-+}{rvon}{CBM-+}{swlc}" chr$(27) "r
-	print "{rvon}{CBM-+}{rvof}{CBM-+}   vdc version is" vv "{down}"
+	print "{rvon}{CBM-+}{rvof}    vdc version is" vv "{down}"
 	for a = 0 to 240 step 16
 		poke 241, a
 		print "{blk}@{wht}a{red}b{cyn}c{pur}d{grn}e{blu}f{yel}g{orng}h{brn}i{lred}j{gry1}k{gry2}l{lgrn}m{lblu}n{gry3}o{rvon}{blk}@{wht}a{red}b{cyn}c{pur}d{grn}e{blu}f{yel}g{orng}h{brn}i{lred}j{gry1}k{gry2}l{lgrn}m{lblu}n{gry3}o{rvof}";
@@ -35,13 +36,14 @@
 	print " letters to decrease values,
 	print " with shift to increase.
 	window 40, 0, 79, 24, 1
-	print "{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}{CBM-+}"
+	print "{CBM-+}":rem this is where cursor will be shown
 	print "    x scroll:
 	print "    y scroll:
 	print "w - r22lo, char width:
 	print "h - r23, char height-1:
 	print "l - r1, line length:
 	print "i - r27, line increment:
+	print "u - r29, underline:
 	print "e - r34, enable disp:
 	print "d - r35, disable disp:
 	print "flags:
@@ -60,6 +62,7 @@
 	gosub 950:rem display disable
 	gosub 1050:rem char height
 	gosub 1150:rem char width
+	gosub 1250:rem underline
 	sys wx, de, 34
 	sys wx, dd, 35
 	sys wx, ll, 1:sys wx, li, 27
@@ -67,8 +70,8 @@
 	do
 		print "{home}{left}";:rem put hw cursor where we can see it and make sure the next HOME does not cancel window definition
 		getkey a$
-		a = instr("{up}{down}r{left}{rght}bslLiIeEdDhHwW", a$)
-		on a gosub 200,210,260,300,310,400,500,600,610,700,710,800,810,900,910,1000,1010,1100,1110
+		a = instr("{up}{down}r{left}{rght}bslLiIeEdDhHwWuU", a$)
+		on a gosub 200,210,260,300,310,400,500,600,610,700,710,800,810,900,910,1000,1010,1100,1110,1200,1210
 	loop
 
 200	ys = (ys + 2) and 31:rem up
@@ -79,7 +82,7 @@
 
 260	fr = 64 - fr:rem toggle reverse flag
 	gosub 275
-270	char 1, 24, 11:print fr "{left}  "
+270	char 1, 24, 12:print fr "{left}  "
 	return
 
 275	sys wx, fr + 32 + ys, 24:rem slowflash
@@ -93,12 +96,12 @@
 
 400	fb = 128 - fb:rem toggle bitmap flag
 	gosub 575
-450	char 1, 24, 10:print fb "{left}  "
+450	char 1, 24, 11:print fb "{left}  "
 	return
 
 500	fs = 32 - fs:rem toggle semi graphics
 	gosub 575
-550	char 1, 24, 12:print fs "{left}  "
+550	char 1, 24, 13:print fs "{left}  "
 	return
 
 575	sys wx, fb + 64 + fs + xs, 25:rem bitmap, attr, semi
@@ -119,13 +122,13 @@
 800	de = (de - 2) and 255:rem display enable
 810	de = (de + 1) and 255
 	sys wx, de, 34
-850	char 1, 24, 7:print de "{left}  "
+850	char 1, 24, 8:print de "{left}  "
 	return
 
 900	dd = (dd - 2) and 255:rem display disable
 910	dd = (dd + 1) and 255
 	sys wx, dd, 35
-950	char 1, 24, 8:print dd "{left}  "
+950	char 1, 24, 9:print dd "{left}  "
 	return
 
 1000	ch = (ch - 2) and 31:rem character height
@@ -139,4 +142,10 @@
 	sys rx,, 22:rreg a:a = a and 240
 	sys wx, a + cw, 22
 1150	char 1, 24, 3:print cw "{left}  "
+	return
+
+1200	ul = (ul - 2) and 31:rem underline
+1210	ul = (ul + 1) and 31
+	sys wx, ul, 29
+1250	char 1, 24, 7:print ul "{left}  "
 	return
