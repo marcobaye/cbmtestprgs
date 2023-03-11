@@ -4,13 +4,14 @@
 	print "{down}vdc version is" vv
 	print "switch monitor to vdc!{down}"
 	slow:rem make sure use can see vdc version output on vic
-	graphic 5
+	graphic 5:color 6, 2
 	wx = dec("cdcc"):rem write a to vdc reg x
 	rx = dec("cdda"):rem read vdc reg x
 	ch = 8:rem character height (r23)
 	cw = 8:rem character width (r22:3210)
 	dd = 87:rem display disable (r35)
 	de = 6:rem display enable (r34)
+	fa = 64:rem flag for attributes (r25:6)
 	fb = 0:rem flag for bitmap (r25:7)
 	fr = 64:rem flag for reverse (r24:6)
 	fs = 0:rem flag for semi graphics (r25:5)
@@ -20,9 +21,8 @@
 	xs = 0:rem xscroll (v0 vdc)
 	ys = 0:rem yscroll
 	if vv then ll = 79:xs = 7:rem adjust for v1/v2 vdcs
-	color 6, 2
 	print "{home}{home}{blk}{swlc}{clr}{CBM-+}{CBM-+}{CBM-+}{CBM-+}" chr$(27) "r
-	print "{CBM-+} interactive vdc test program 6
+	print "{CBM-+} interactive vdc test program 7
 	print "{CBM-+}
 	print "{CBM-+} vdc version:" vv
 	print "{CBM-+}
@@ -36,44 +36,47 @@
 	print "{CBM-+} e - r34, enable disp:
 	print "{CBM-+} d - r35, disable disp:
 	print "{CBM-+}   flags:
+	print "{CBM-+} a - attributes:
 	print "{CBM-+} b - bitmap:
 	print "{CBM-+} r - reverse:
 	print "{CBM-+} s - semigraphics:
 	rem show all values
-	gosub 250:rem yscroll
-	gosub 270:rem reverse flag
-	gosub 350:rem xscroll
-	gosub 450:rem bitmap flag
-	gosub 550:rem semigraphics flag
-	gosub 650:rem line length
-	gosub 750:rem line increment
-	gosub 850:rem display enable
-	gosub 950:rem display disable
-	gosub 1050:rem char height
-	gosub 1150:rem char width
-	gosub 1250:rem underline
-	for j = 0 to 15
-		char 1, 40, j
-		a = 16 * j
-		gosub 2000
-		print "{rvon}";
-		gosub 2000
-		print "{rvof}";
+	gosub 320:rem yscroll
+	gosub 340:rem reverse flag
+	gosub 380:rem xscroll
+	gosub 400:rem bitmap flag
+	gosub 420:rem attributes flag
+	gosub 440:rem semigraphics flag
+	gosub 480:rem line length
+	gosub 510:rem line increment
+	gosub 540:rem display enable
+	gosub 570:rem display disable
+	gosub 600:rem char height
+	gosub 630:rem char width
+	gosub 660:rem underline
+	char 1, 40, 0, "standard        software reverse 2ruf
+	for a = 0 to 15
+		poke 241, 16 * a
+		char 1, 40, a + 1, "{red}@abc{grn}defg{blu}hijk{blk}lmno{rvon}{red}@abc{grn}defg{blu}hijk{blk}lmno{rvof}"
 		poke 241, 128
-		print a;
+		if a and 8 then print " 2";:else print "  ";
+		if a and 4 then print "r";:else print " ";
+		if a and 2 then print "u";:else print " ";
+		if a and 1 then print "f";:else print " ";
 	next
 	for j = 0 to 2
 		char 1, 41 + 2 * j, 22 + j
 		a = 128 + 32
-		gosub 2000
+		gosub 1000
 		a = 128 + 64 + 32
-		gosub 2000
+		gosub 1000
 	next
 	poke 241, 128:rem back to black, no revs or underline or flash
 	char 1, 0, 20
 	print " use cursor keys to scroll,
 	print " letters to decrease register values,
 	print " shifted letters to increase.
+	sys wx, 15, 26:rem black on white
 	sys wx, de, 34
 	sys wx, dd, 35
 	sys wx, ll, 1:sys wx, li, 27
@@ -81,87 +84,92 @@
 	do
 		print "{home}";:rem put hw cursor where we can see it
 		getkey a$
-		a = instr("{up}{down}r{left}{rght}bslLiIeEdDhHwWuU", a$)
-		on a gosub 200,210,260,300,310,400,500,600,610,700,710,800,810,900,910,1000,1010,1100,1110,1200,1210
+		a = instr("{up}{down}r{left}{rght}baslLiIeEdDhHwWuU", a$)
+		on a gosub 300,310,330,360,370,390,410,430,460,470,490,500,520,530,550,560,580,590,610,620,640,650
 	loop
 
-200	ys = (ys + 2) and 31:rem up
-210	ys = (ys - 1) and 31:rem down
-	gosub 275
-250	char 1, 26, 6:print ys "{left}  "
+300	ys = (ys + 2) and 31:rem up
+310	ys = (ys - 1) and 31:rem down
+	gosub 350
+320	char 1, 26, 6:print ys "{left}  "
 	return
 
-260	fr = 64 - fr:rem toggle reverse flag
-	gosub 275
-270	char 1, 26, 16:print fr "{left}  "
+330	fr = 64 - fr:rem toggle reverse flag
+	gosub 350
+340	char 1, 26, 17:print fr "{left}  "
 	return
 
-275	sys wx, fr + 32 + ys, 24:rem slowflash
+350	sys wx, fr + 32 + ys, 24:rem slowflash
 	return
 
-300	xs = (xs - 2) and 15:rem left
-310	xs = (xs + 1) and 15:rem right
-	gosub 575
-350	char 1, 26, 5:print xs "{left}  "
+360	xs = (xs - 2) and 15:rem left
+370	xs = (xs + 1) and 15:rem right
+	gosub 450
+380	char 1, 26, 5:print xs "{left}  "
 	return
 
-400	fb = 128 - fb:rem toggle bitmap flag
-	gosub 575
-450	char 1, 26, 15:print fb "{left}  "
+390	fb = 128 - fb:rem toggle bitmap flag
+	gosub 450
+400	char 1, 26, 16:print fb "{left}  "
 	return
 
-500	fs = 32 - fs:rem toggle semi graphics
-	gosub 575
-550	char 1, 26, 17:print fs "{left}  "
+410	fa = 64 - fa:rem toggle attributes flag
+	gosub 450
+420	char 1, 26, 15:print fa "{left}  "
 	return
 
-575	sys wx, fb + 64 + fs + xs, 25:rem bitmap, attr, semi
+430	fs = 32 - fs:rem toggle semi graphics
+	gosub 450
+440	char 1, 26, 18:print fs "{left}  "
 	return
 
-600	ll = (ll - 2) and 255:rem line length
-610	ll = (ll + 1) and 255
+450	sys wx, fb + fa + fs + xs, 25
+	return
+
+460	ll = (ll - 2) and 255:rem line length
+470	ll = (ll + 1) and 255
 	sys wx, ll, 1
-650	char 1, 26, 9:print ll "{left}  "
+480	char 1, 26, 9:print ll "{left}  "
 	return
 
-700	li = (li - 2) and 255:rem line increment
-710	li = (li + 1) and 255
+490	li = (li - 2) and 255:rem line increment
+500	li = (li + 1) and 255
 	sys wx, li, 27
-750	char 1, 26, 10:print li "{left}  "
+510	char 1, 26, 10:print li "{left}  "
 	return
 
-800	de = (de - 2) and 255:rem display enable
-810	de = (de + 1) and 255
+520	de = (de - 2) and 255:rem display enable
+530	de = (de + 1) and 255
 	sys wx, de, 34
-850	char 1, 26, 12:print de "{left}  "
+540	char 1, 26, 12:print de "{left}  "
 	return
 
-900	dd = (dd - 2) and 255:rem display disable
-910	dd = (dd + 1) and 255
+550	dd = (dd - 2) and 255:rem display disable
+560	dd = (dd + 1) and 255
 	sys wx, dd, 35
-950	char 1, 26, 13:print dd "{left}  "
+570	char 1, 26, 13:print dd "{left}  "
 	return
 
-1000	ch = (ch - 2) and 31:rem character height
-1010	ch = (ch + 1) and 31
+580	ch = (ch - 2) and 31:rem character height
+590	ch = (ch + 1) and 31
 	sys wx, ch, 23
-1050	char 1, 26, 8:print ch "{left}  "
+600	char 1, 26, 8:print ch "{left}  "
 	return
 
-1100	cw = (cw - 2) and 15:rem character width
-1110	cw = (cw + 1) and 15
+610	cw = (cw - 2) and 15:rem character width
+620	cw = (cw + 1) and 15
 	sys rx,, 22:rreg a:a = a and 240
 	sys wx, a + cw, 22
-1150	char 1, 26, 7:print cw "{left}  "
+630	char 1, 26, 7:print cw "{left}  "
 	return
 
-1200	ul = (ul - 2) and 31:rem underline
-1210	ul = (ul + 1) and 31
+640	ul = (ul - 2) and 31:rem underline
+650	ul = (ul + 1) and 31
 	sys wx, ul, 29
-1250	char 1, 26, 11:print ul "{left}  "
+660	char 1, 26, 11:print ul "{left}  "
 	return
 
-2000	for i = 0 to 15
+1000	for i = 0 to 15
 		poke 241, a + i:rem change color
 		print chr$(64 + i);
 	next
