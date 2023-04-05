@@ -1,13 +1,14 @@
 ;ACME 0.95.7
-; 1351 driver
+; 1351 driver (and compatibles, which might have a middle button)
 
 ; CIA #1, $dc01: %76543210
-;	bit7	bit6	bit5	bit4		bit3	bit2	bi1	bit0
-;	keyb,	keyb,	keyb,	LEFTBUTTON,	keyb,	keyb,	keyb,	RIGHTBUTTON
+;	bit7	bit6	bit5	bit4		bit3	bit2	bi1		bit0
+;	keyb,	keyb,	keyb,	LEFTBUTTON,	keyb,	keyb,	MIDDLEBUTTON,	RIGHTBUTTON
 
 	!zone 1351
 
 	.LEFT_BUTTON	= $10
+	;.MIDDLE_BUTTON	= $02	; only for CMD mice and MicroMys
 	;.RIGHT_BUTTON	= $01
 	.X_STUFF	= 0
 	.Y_STUFF	= 1
@@ -24,7 +25,7 @@ cbm1351_poll
 		; mouse x
 		ldx #.X_STUFF
 		jsr .pot_delta
-		; now YYAA is signed x movement. add to current x value.
+		; now YYAA is signed x movement. add to current x value
 		clc
 		adc table_x_lo + ENUM_1351
 		sta table_x_lo + ENUM_1351
@@ -63,7 +64,7 @@ cbm1351_poll
 		bcs +
 			ldy #BUTTON_PRESS
 +		sty sprite_1351 + 2	; ##O
-		; middle mouse button (Micromys only!)
+		; middle mouse button (CMD and MicroMys only!)
 		lsr	; right button is in "down" bit (low-active)
 		ldy #BUTTON_NOPRESS
 		bcs +

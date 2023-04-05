@@ -72,13 +72,13 @@ joystick_poll
 		bcs +
 			ldy #BUTTON_PRESS
 +		sty sprite_joystick	; O##
-		; check "right mouse button"
+		; check "right mouse button" (for 1350 and compatibles)
 		ldy #BUTTON_NOPRESS
 		lda potx
 		bmi +
 			ldy #BUTTON_PRESS
 +		sty sprite_joystick + 2	; ##O
-		; check "middle mouse button"
+		; check "middle mouse button" (for 1350 mode of CMD? MicroMys?)
 		ldy #BUTTON_NOPRESS
 		lda poty
 		bmi +
