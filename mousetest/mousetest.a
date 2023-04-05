@@ -9,7 +9,8 @@
 ;		Flipped joystick and 1351 sprites.
 ; 14 Jun 2016	Added primm to make re-startable and allowed reposition-on-restore (version 1c)
 ; 16 Jun 2016	Fixed bug where each port change was reported twice (made amigatari use 2-pixel steps)
-;		Made Amiga/ST drivers act upon _every_ port change instead of just clk bits (version 1d)
+;		Made Amiga/ST drivers act upon _every_ port change instead of just clk bits.
+;		Used raster irq to do sprite stuff in border, making version 2.
 
 	!src <cbm/c64/petscii.a>
 	!src <cbm/c64/vic.a>
@@ -26,6 +27,7 @@
 	ENUM_TOTAL	= 5
 ; helper values
 	BITMASK_ALL	= (1 << ENUM_TOTAL) - 1
+	CR		= 13
 	MODIFIED8	= $ff
 !addr	MODIFIED16	= $ffff
 	BUTTON_PRESS	= %#......#	; these are written to top
@@ -92,7 +94,7 @@ my_primm	pla	; get low byte of return address - 1
 
 
 ; NMI, called when user presses RESTORE
-my_nmi		inc reset_pos	; set flag so IRQ repositions sprites
+my_nmi		inc reset_pos	; set flag to let main loop know
 		; now call original nmi handler
 .ori_nmi = * + 1:jmp MODIFIED16
 
@@ -103,37 +105,51 @@ sprites	!warn "There are ", sprites - .hole, " unused bytes before the sprites."
 	!src "sprites.a"
 	* = sprites + 64 * ENUM_TOTAL - 1	; go on after sprites
 
+
+; irq hook
+my_irq		lda vic_irq
+		bmi .raster_irq
+		; now call original irq handler
+.ori_irq = * + 1:jmp MODIFIED16
+
+
+; raster interrupt
+.raster_irq	sta vic_irq	; acknowledge interrupt
+		inc vsync	; set flag to let main loop know
+		jmp address($ea81)
+
+
 ; main program
 entry ; entry point for SYS
 		cld
 		; output text
 		jsr my_primm
 		!pet petscii_LOWERCASE, petscii_CLEAR
-		!pet "$dc01: %        ", petscii_CR	; (spaces are for v1/v2 kernal)
-		!pet "$d419: %        ", petscii_CR
-		!pet "$d41a: %        ", petscii_CR
+		!pet "$dc01: %        ", CR	; (spaces are for v1/v2 kernal)
+		!pet "$d419: %        ", CR
+		!pet "$d41a: %        ", CR
 	SCREENOFFSET_cia	= 8	; show cia bits in upper left corner
 	SCREENOFFSET_potx	= 8 + 40	; and pot values
 	SCREENOFFSET_poty	= 8 + 2 * 40	; below
 !if SCREENOFFSET_poty > 256 - 8 { !error "X index would overrun in bit display" }
-		!pet petscii_CR
-		!pet "This is mousetest, version 1d.", petscii_CR
-		!pet "Plug mouse in joyport #1 and use it,", petscii_CR
+		!pet CR
+		!pet "This is mousetest, version 2.", CR
+		!pet "Plug mouse in joyport #1 and use it,", CR
 		!pet "then check which sprite moves correctly."
-		!pet petscii_CR
-		!pet petscii_CR
-		!pet petscii_CR
-		!pet petscii_CR
-		!pet petscii_CR
-		!pet "Button presses are shown in top line of", petscii_CR
-		!pet "sprite. Unfortunately there is no safe", petscii_CR
+		!pet CR
+		!pet CR
+		!pet CR
+		!pet CR
+		!pet CR
+		!pet "Button presses are shown in top line of", CR
+		!pet "sprite. Unfortunately there is no safe", CR
 		!pet "way to determine the state of additional"
-		!pet "buttons on Amiga and Atari mice.", petscii_CR
-		!pet petscii_CR
-		!pet "Press RESTORE to re-position sprites.", petscii_CR
-		!pet petscii_CR
+		!pet "buttons on Amiga and Atari mice.", CR
+		!pet CR
+		!pet "Press RESTORE to reset sprite positions."
+		!pet CR
 		!pet "If none of the icons move, the mouse may"
-		!pet "be a 'NEOS mouse', which is not yet", petscii_CR
+		!pet "be a 'NEOS mouse', which is not yet", CR
 		!pet "supported by this program."
 		!byte 0	; terminate
 		; init sprite registers
@@ -179,27 +195,37 @@ entry ; entry point for SYS
 		sta sys_iirq
 		stx sys_iirq + 1
 		plp
-		; endless polling loop (amiga/atari mice must be polled as often as possible)
-----			; get state of joyport
-			lda #0	; set port b to input
-			sta cia1_ddrb
---				lda cia1_prb
-				cmp cia1_prb
-				bne --
-			tax	; X = now
-			eor state_now	; A = change
-			sei
-			stx state_now
-			sta state_change
-			cli
-			; call drivers
-			jsr amiga_st_idle
-			jsr cx22_idle
-			jmp ----
-
-
-; IRQ, to poll joystick and 1351 (and Amiga/Atari buttons), and to update sprite positions
-my_irq		lda sid_potx
+		; raster irq
+		lda #251	; first line of lower border
+		sta vic_line
+		lda #%...##.##
+		sta vic_controlv
+		lda #1	; enable raster irq
+		sta vic_irqmask
+; main loop ;)
+; endless polling loop (amiga/atari mice must be polled as often as possible)
+mainloop	; get state of joyport
+		lda #0	; set port b to input
+		sta cia1_ddrb
+--			lda cia1_prb
+			cmp cia1_prb
+			bne --
+		tax	; X = now
+		eor state_now	; A = change
+		sei
+		stx state_now
+		sta state_change
+		cli
+		; call drivers
+		jsr amiga_st_idle
+		jsr cx22_idle
+		; check for irq stuff
+vsync = * + 1:	lda #0	; MODIFIED!
+		beq mainloop
+; "interrupt" (ok, not really, only triggered by it)
+		lsr vsync
+; poll joystick and 1351 (and Amiga/Atari buttons), and update sprite positions
+		lda sid_potx
 		sta potx
 		lda sid_poty
 		sta poty
@@ -212,7 +238,6 @@ reset_pos = * + 1:lda #0	; MODIFIED!
 		beq ++
 			lsr reset_pos
 			; set x/y values to defaults
-			; FIXME - this might happen during "change1" between lo and hi!
 			ldx #4 * ENUM_TOTAL - 1
 --				lda initial_x_lo, x
 				sta table_x_lo, x
@@ -258,8 +283,7 @@ reset_pos = * + 1:lda #0	; MODIFIED!
 		; fix x overflow
 		lda tmp
 		sta vic_msb_xs
-		; now call original irq handler
-.ori_irq = * + 1:jmp MODIFIED16
+		jmp mainloop
 
 
 ; helper function to display bits of port byte
@@ -279,27 +303,27 @@ show_bits	sec	; make sure first ROL inserts a 1
 		rts
 
 
-; helper function for Amiga/Atari mice, adds/subtracts 1
-; entry: X = target offset (0..ENUM_TOTAL for x change, +ENUM_TOTAL for y change)
+; helper function for Amiga/Atari mice, increments/decrements value
+; entry: X = target offset ([0..ENUM_TOTAL[ for x change, +ENUM_TOTAL for y change)
 ; KEEPS Y!
 ; Z set means decrement, Z clear means increment
 changeZ		beq .decrement
 		bne .increment
+; helper function for Amiga/Atari mice, increments/decrements value
+; entry: X = target offset ([0..ENUM_TOTAL[ for x change, +ENUM_TOTAL for y change)
 ; KEEPS Y!
 ; C set means decrement, C clear means increment
 changeC		bcs .decrement
-.increment
-		inc table_x_lo, x
+.increment	inc table_x_lo, x
 		bne restrict
 			inc table_x_hi, x
 			jmp restrict
-
 .decrement	lda table_x_lo, x
 		bne +
 			dec table_x_hi, x
 +		dec table_x_lo, x
 		;FALLTHROUGH
-; restrict to valid range (0..ENUM_TOTAL for x, +ENUM_TOTAL for y)
+; restrict to valid range ([0..ENUM_TOTAL[ for x, +ENUM_TOTAL for y)
 ; KEEPS Y!
 restrict	lda table_x_hi, x
 		bmi .zero_it

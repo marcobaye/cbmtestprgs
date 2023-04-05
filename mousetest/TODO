@@ -4,9 +4,9 @@ support paddles
 support koala pad?
 find out how CMD smartmouse encodes middle button (same as MicroMys?)
 
-add sei/cli to position change
-
-disable CIA IRQ, use raster interrupt instead
-disable ROMs, use hardware irq/nmi vectors instead
+disable CIA IRQ?
+disable ROMs, use hardware irq/nmi vectors instead?
 
 use y-expanded sprites and make them look like mice?
+
+make RESTORE also reset 1351 interval?
