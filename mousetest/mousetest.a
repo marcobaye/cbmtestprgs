@@ -96,7 +96,7 @@ my_primm	pla	; get low byte of return address - 1
 ; NMI, called when user presses RESTORE
 my_nmi		inc reset_pos	; set flag to let main loop know
 		; now call original nmi handler
-.ori_nmi = * + 1:jmp MODIFIED16
+		jmp MODIFIED16	: .ori_nmi = * - 2
 
 ; include sprite patterns
 	!src "sprites.a"
@@ -105,7 +105,7 @@ my_nmi		inc reset_pos	; set flag to let main loop know
 my_irq		lda vic_irq
 		bmi .raster_irq
 		; now call original irq handler
-.ori_irq = * + 1:jmp MODIFIED16
+		jmp MODIFIED16	: .ori_irq = * - 2
 
 
 ; raster interrupt
@@ -161,7 +161,7 @@ entry ; entry point for SYS
 		ldx #ENUM_TOTAL - 1
 --			lda #viccolor_GRAY3	; set sprite color
 			sta vic_cs0, x
-.ptr = * + 1:		lda #MODIFIED8	; set sprite pointer
+			lda #MODIFIED8	: .ptr = * - 1	; set sprite pointer
 			sta spr_ptr, x
 			dec .ptr	; prepare for next iteration
 			dex
@@ -215,7 +215,7 @@ mainloop	; get state of joyport
 		jsr amiga_st_idle
 		jsr cx22_idle
 		; check for irq stuff
-vsync = * + 1:	lda #0	; MODIFIED!
+		lda #MODIFIED8 & 0	: vsync = * - 1	; selfmod, but init to zero
 		beq mainloop
 ; "interrupt" (ok, not really, only triggered by it)
 		lsr vsync
@@ -229,7 +229,7 @@ vsync = * + 1:	lda #0	; MODIFIED!
 		jsr amiga_st_poll	; shared function for buttons
 		jsr cx22_poll
 		; check whether to reset positions
-reset_pos = * + 1:lda #0	; MODIFIED!
+		lda #MODIFIED8 & 0	: reset_pos = * - 1	; selfmod, but init to zero
 		beq ++
 			lsr reset_pos
 			; set x/y values to defaults
