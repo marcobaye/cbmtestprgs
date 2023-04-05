@@ -2,7 +2,7 @@
 ; joystick driver
 
 ; CIA #1, $dc01: %76543210
-;	bit7	bi6	bit5	bit4	bit3	bit2	bi1	bit0
+;	bit7	bit6	bit5	bit4	bit3	bit2	bi1	bit0
 ;	keyb,	keyb,	keyb,	BUTTON,	RIGHT,	LEFT,	DOWN,	UP
 
 	!zone joystick

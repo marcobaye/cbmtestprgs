@@ -2,3 +2,13 @@
 support NEOS mouse
 support paddles
 find out how CMD smartmouse encodes middle button
+
+use RESTORE to increment NMI counter, check it in idle loop and reset
+positions (with sei/cli brackets)
+
+disable CIA IRQ, use raster interrupt instead
+disable ROMs, use hardware irq/nmi vectors instead
+
+act upon *every* state change in Amiga/Atari drivers
+
+use y-expanded sprites and make them look like mice?
