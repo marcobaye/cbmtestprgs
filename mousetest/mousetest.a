@@ -98,13 +98,8 @@ my_nmi		inc reset_pos	; set flag to let main loop know
 		; now call original nmi handler
 .ori_nmi = * + 1:jmp MODIFIED16
 
-
-; reserve space for sprites
-.hole	!align 63, 0
-sprites	!warn "There are ", sprites - .hole, " unused bytes before the sprites."	; atm, 2 bytes
+; include sprite patterns
 	!src "sprites.a"
-	* = sprites + 64 * ENUM_TOTAL - 1	; go on after sprites
-
 
 ; irq hook
 my_irq		lda vic_irq
