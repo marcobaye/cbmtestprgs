@@ -45,10 +45,9 @@
 ; zp variables
 !addr	tmp		= $02
 !addr	state_now	= $fb
-!addr	state_previous	= $fc
-!addr	state_change	= $fd
-!addr	potx		= $fe	; potx and poty must be consecutive!
-!addr	poty		= $ff
+!addr	state_change	= $fc
+!addr	potx		= $fd	; potx and poty must be consecutive!
+!addr	poty		= $fe
 
 
 ; basic header
@@ -267,13 +266,11 @@ read_port	lda #0	; set port b to input
 --			lda cia1_prb
 			cmp cia1_prb
 			bne --
-		tax	; X = current
-		eor state_previous	; A = change
-		ldy state_now	; Y = previous
+		tax	; X = now
+		eor state_now	; A = change
 		sei
-		sta state_change
 		stx state_now
-		sty state_previous
+		sta state_change
 		cli
 		rts
 
