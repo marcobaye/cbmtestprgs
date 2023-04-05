@@ -5,6 +5,9 @@
 ; Licence	Free software
 ; Changes:
 ; 10 Jun 2016	First try, derived from aamouse and DuoDriver.
+; 12 Jun 2016	Fixed comments (version 1b).
+;		Flipped joystick and 1351 sprites.
+; 14 Jun 2016	Added primm to make re-startable and allowed reposition-on-restore (version 1c)
 
 	!src <cbm/c64/petscii.a>
 	!src <cbm/c64/vic.a>
@@ -35,9 +38,8 @@
 	MAX_COORD_Y	= 200 - 21
 
 !addr	sys_iirq	= $0314	; interrupt vector
-!addr	display_cia1b	= $0400 + 6	; show cia bits in upper left corner
-!addr	display_potx	= $0400 + 46	; and pot values
-!addr	display_poty	= $0400 + 86	;	below
+!addr	sys_inmi	= $0318	; nmi vector
+!addr	screen		= $0400	; for displaying port bits
 !addr	spr_ptr		= 2040	; sprite pointers
 
 ; zp variables
@@ -48,88 +50,65 @@
 !addr	potx		= $fe	; potx and poty must be consecutive!
 !addr	poty		= $ff
 
+
 ; basic header
 	* = $0801
-	!wo line2, 2016
-	!by $9e, $20	; "sys "
-	!by '0' + entry % 10000 / 1000
-	!by '0' + entry %  1000 /  100
-	!by '0' + entry %   100 /   10
-	!by '0' + entry %    10
-	!pet $3a, $8f, " saufbox", $0	; ":rem "
-line2	!wo 0
+		!wo line2, 2016
+		!by $9e, $20	; "sys "
+		!by '0' + entry % 10000 / 1000
+		!by '0' + entry %  1000 /  100
+		!by '0' + entry %   100 /   10
+		!by '0' + entry %    10
+		!pet $3a, $8f, " saufbox!", $0	; ":rem "
+line2		!wo 0
 
-table_x_lo	!by 70, 100, 130, 160, 190
-	* = table_x_lo + ENUM_TOTAL
-table_y_lo	!fill ENUM_TOTAL, 140
 
-table_x_hi	!fill ENUM_TOTAL
-table_y_hi	!fill ENUM_TOTAL
-
-max_x_lo	!fill ENUM_TOTAL, <MAX_COORD_X
-max_y_lo	!fill ENUM_TOTAL, <MAX_COORD_Y
-
-max_x_hi	!fill ENUM_TOTAL, >MAX_COORD_X
-max_y_hi	!fill ENUM_TOTAL, >MAX_COORD_Y
-; atm, 0 bytes left to next sprite block
-	!src "sprites.a"
-
-change1 ; call with X = target offset (0..ENUM_TOTAL for x change, +ENUM_TOTAL for y change) and Z = change
-; Z set means decrement, Z clear means increment
-		beq .decrement
-;.increment
-		inc table_x_lo, x
-		bne restrict
-		inc table_x_hi, x
-		jmp restrict
-
-.decrement	lda table_x_lo, x
-		bne +
-			dec table_x_hi, x
-+		dec table_x_lo, x
-restrict ; restrict to valid range (0..ENUM_TOTAL for x, +ENUM_TOTAL for y)
-		lda table_x_hi, x
-		bmi .zero_it
-		cmp max_x_hi, x
-		bcc .rts
-		bne +
-			lda max_x_lo, x
-			cmp table_x_lo, x
-			bcs .rts
-+		lda max_x_lo, x
-		ldy max_x_hi, x
-		jmp .set
-
-.zero_it	lda #0
-		tay
-.set		sta table_x_lo, x
+; PRIMM - this fits neatly before next sprite block
+	primm_ptr	= tmp	; we need a zp pointer
+my_primm	pla	; get low byte of return address - 1
+		tay	; into Y
+		pla	; get high byte of return address - 1
+		sta primm_ptr + 1	; to ptr high
+		lda #0	; and zero ptr low, so "(ptr), y" points before text
+		sta primm_ptr
+		beq +
+		;--
+---			; fix high byte
+			inc primm_ptr + 1
+			bne +++	; I trust this branch always gets taken
+			;--
+-			jsr k_chrout
++			iny
+			beq ---
++++			lda (primm_ptr), y
+			bne -
+		; push updated address onto stack
+		lda primm_ptr + 1
+		pha
 		tya
-		sta table_x_hi, x
-.rts		rts
+		pha
+		rts	; return to caller (after zero-terminated text)
 
-read_port ; get state of joyport
-		lda #0	; set port b to input
-		sta cia1_ddrb
---			lda cia1_prb
-			cmp cia1_prb
-			bne --
-		tax	; X = current
-		eor state_previous	; A = change
-		ldy state_now	; Y = previous
-		sei
-		sta state_change
-		stx state_now
-		sty state_previous
-		cli
-		rts
 
-.help_text ; text to output after start
+; atm, 8 bytes are free before the next sprite block:
+	!src "sprites.a"	; file will align sprites
+
+
+; main program
+entry ; entry point for SYS
+		cld
+		; output text
+		jsr my_primm
 		!pet petscii_LOWERCASE, petscii_CLEAR
-		!pet "$dc01:        ", petscii_CR
-		!pet "$d419:        ", petscii_CR
-		!pet "$d41a:        ", petscii_CR
+		!pet "$dc01: %        ", petscii_CR	; (spaces are for v1/v2 kernal)
+		!pet "$d419: %        ", petscii_CR
+		!pet "$d41a: %        ", petscii_CR
+	SCREENOFFSET_cia	= 8	; show cia bits in upper left corner
+	SCREENOFFSET_potx	= 8 + 40	; and pot values
+	SCREENOFFSET_poty	= 8 + 2 * 40	; below
+!if SCREENOFFSET_poty > 256 - 8 { !error "X index would overrun in bit display" }
 		!pet petscii_CR
-		!pet "This is mousetest, version 1.", petscii_CR
+		!pet "This is mousetest, version 1c.", petscii_CR
 		!pet "Plug mouse in joyport #1 and use it,", petscii_CR
 		!pet "then check which sprite moves correctly."
 		!pet petscii_CR
@@ -140,18 +119,9 @@ read_port ; get state of joyport
 		!pet petscii_CR
 		!pet "If none of the icons move, the mouse may"
 		!pet "be a 'NEOS mouse', which is not yet", petscii_CR
-		!pet "supported by this program.", 0
-
---			jsr k_chrout
-			inc .help
-			bne +
-				inc .help + 1
-+
-entry ; entry point for SYS
-.help = * + 1:	lda .help_text
-		bne --
-		cld
-++		; init sprite registers
+		!pet "supported by this program."
+		!byte 0	; terminate
+		; init sprite registers
 		ldy #0
 		sty vic_sdy	; no double height
 		sty vic_smc	; no multicolor
@@ -170,12 +140,23 @@ entry ; entry point for SYS
 			dec .ptr	; prepare for next iteration
 			dex
 			bpl --
-		; add to interrupt
+		inc reset_pos	; make sure next interrupt re-positions the sprites
+		; keep current nmi
+		lda sys_inmi
+		ldx sys_inmi + 1
+		sta .ori_nmi
+		stx .ori_nmi + 1
+		; install own nmi
+		lda #<my_nmi
+		ldx #>my_nmi
+		sta sys_inmi
+		stx sys_inmi + 1
+		; keep current irq
 		lda sys_iirq
 		ldx sys_iirq + 1
-		sta mod16
-		stx mod16 + 1
-		; let irq vector point to driver code
+		sta .ori_irq
+		stx .ori_irq + 1
+		; install own irq
 		lda #<my_irq
 		ldx #>my_irq
 		php
@@ -184,14 +165,21 @@ entry ; entry point for SYS
 		stx sys_iirq + 1
 		plp
 		; endless polling loop (amiga/atari mice must be polled as often as possible)
--			jsr read_port
+--			jsr read_port
 			jsr amiga_idle
 			jsr atarist_idle
 			jsr cx22_idle
-			jmp -
-; interrupt
-my_irq ; 1351 and joystick need only be polled every once in a while...
-		lda sid_potx
+			jmp --
+
+
+; NMI, called when user presses RESTORE
+my_nmi		inc reset_pos	; set flag so IRQ repositions sprites
+		; now call original nmi handler
+.ori_nmi = * + 1:jmp MODIFIED16
+
+
+; IRQ, to poll joystick and 1351 (and Amiga/Atari buttons), and to update sprite positions
+my_irq		lda sid_potx
 		sta potx
 		lda sid_poty
 		sta poty
@@ -199,47 +187,31 @@ my_irq ; 1351 and joystick need only be polled every once in a while...
 		jsr cbm1351_poll
 		jsr amiga_st_poll	; shared function for buttons
 		jsr cx22_poll
-		jsr screen_update
-; The initialisation routine sets the argument to the address of the
-; previous IRQ routine.
-mod16 = * + 1:	jmp MODIFIED16	; (self-modifying)
-
-
-screen_update ; update sprite positions and screen contents
+		; check whether to reset positions
+reset_pos = * + 1:lda #0	; MODIFIED!
+		beq ++
+			lsr reset_pos
+			; set x/y values to defaults
+			; FIXME - this might happen during "change1" between lo and hi!
+			ldx #4 * ENUM_TOTAL - 1
+--				lda initial_x_lo, x
+				sta table_x_lo, x
+				dex
+				bpl --
+++		; now update sprite positions and screen contents
 		; show current port bits in upper right corner
 		lda state_now
-		sta tmp
-		ldx #8
---			lsr tmp
-			lda #'#'
-			bcs +
-				lda #'.'
-+			sta display_cia1b - 1, x
-			dex
-			bne --
-		; show pot values below
+		ldx #SCREENOFFSET_cia
+		jsr show_bits
+		; show potx value below
 		lda potx
-		sta tmp
-		ldx #8
---			lsr tmp
-			lda #'#'
-			bcs +
-				lda #'.'
-+			sta display_potx - 1, x
-			dex
-			bne --
-		; show current port bits in upper right corner
+		ldx #SCREENOFFSET_potx
+		jsr show_bits
+		; show poty value below
 		lda poty
-		sta tmp
-		ldx #8
---			lsr tmp
-			lda #'#'
-			bcs +
-				lda #'.'
-+			sta display_poty - 1, x
-			dex
-			bne --
-		; update sprites
+		ldx #SCREENOFFSET_poty
+		jsr show_bits
+		; move sprites
 		ldx #ENUM_TOTAL - 1
 --			; prepare Y to hold 2*X because sprite register layout is unfortunate
 			txa
@@ -266,16 +238,82 @@ screen_update ; update sprite positions and screen contents
 		; fix x overflow
 		lda tmp
 		sta vic_msb_xs
+		; now call original irq handler
+.ori_irq = * + 1:jmp MODIFIED16
+
+
+; helper function to display bits of port byte
+; entry: A = value, X = offset
+show_bits	sec	; make sure first ROL inserts a 1
+		rol	; get msb
+		sta tmp
+--			lda #'.'
+			bcc ++
+				lda #'#'
+				clc
+++			sta screen, x
+			inx
+			;clc
+			rol tmp	; insert 0
+			bne --
 		rts
 
-	!src "joystick.a"
-	!src "1351.a"
-	!src "amiga.a"
-	!src "atarist.a"
-	!src "cx22.a"
 
-amiga_st_poll ; called via interrupt
-		; left button
+; get state of joyport
+read_port	lda #0	; set port b to input
+		sta cia1_ddrb
+--			lda cia1_prb
+			cmp cia1_prb
+			bne --
+		tax	; X = current
+		eor state_previous	; A = change
+		ldy state_now	; Y = previous
+		sei
+		sta state_change
+		stx state_now
+		sty state_previous
+		cli
+		rts
+
+
+; helper function for Amiga/Atari mice, adds/subtracts 1
+; Z set means decrement, Z clear means increment
+; call with X = target offset (0..ENUM_TOTAL for x change, +ENUM_TOTAL for y change) and Z = change
+change1		beq .decrement
+;.increment
+		inc table_x_lo, x
+		bne restrict
+			inc table_x_hi, x
+			jmp restrict
+
+.decrement	lda table_x_lo, x
+		bne +
+			dec table_x_hi, x
++		dec table_x_lo, x
+		;FALLTHROUGH
+; restrict to valid range (0..ENUM_TOTAL for x, +ENUM_TOTAL for y)
+restrict	lda table_x_hi, x
+		bmi .zero_it
+		cmp max_x_hi, x
+		bcc .rts
+		bne +
+			lda max_x_lo, x
+			cmp table_x_lo, x
+			bcs .rts
++		lda max_x_lo, x
+		ldy max_x_hi, x
+		jmp .set
+
+.zero_it	lda #0
+		tay
+.set		sta table_x_lo, x
+		tya
+		sta table_x_hi, x
+.rts		rts
+
+
+; button poll for Amiga and Atari, called via interrupt
+amiga_st_poll	; left button
 		ldy #BUTTON_NOPRESS
 		lda state_now
 		and #$10
@@ -283,7 +321,6 @@ amiga_st_poll ; called via interrupt
 			ldy #BUTTON_PRESS
 +		sty sprite_amiga	; O##
 		sty sprite_atarist	; O##
-
 !if 3=4 {
 commented out because real Amiga/Atari mice connect potx/poty to GND,
 which cannot be detected by C64. It only works in VICE.
@@ -303,3 +340,31 @@ which cannot be detected by C64. It only works in VICE.
 		sty sprite_atarist + 1	; #O#
 }
 		rts
+
+
+	!src "joystick.a"
+	!src "1351.a"
+	!src "amiga.a"
+	!src "atarist.a"
+	!src "cx22.a"
+
+
+; tables
+initial_x_lo	!for .i, 0, ENUM_TOTAL - 1 {
+			!by 70 + .i * 30	; x lo
+		}
+		!fill ENUM_TOTAL, 140	; y lo
+		!fill ENUM_TOTAL	; x hi
+		!fill ENUM_TOTAL	; y hi
+
+max_x_lo	!fill ENUM_TOTAL, <MAX_COORD_X
+max_y_lo	!fill ENUM_TOTAL, <MAX_COORD_Y
+max_x_hi	!fill ENUM_TOTAL, >MAX_COORD_X
+max_y_hi	!fill ENUM_TOTAL, >MAX_COORD_Y
+
+; external data:
+
+	table_x_lo	= *
+	table_y_lo	= * + ENUM_TOTAL
+	table_x_hi	= * + ENUM_TOTAL * 2
+	table_y_hi	= * + ENUM_TOTAL * 3
