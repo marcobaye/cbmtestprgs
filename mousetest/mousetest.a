@@ -1,0 +1,305 @@
+;ACME 0.95.7
+; Name		mousetest
+; Purpose	Use several input drivers to move sprites, so user can tell which type of mouse they are using.
+; Author	(c) Marco Baye, 2016
+; Licence	Free software
+; Changes:
+; 10 Jun 2016	First try, derived from aamouse and DuoDriver.
+
+	!src <cbm/c64/petscii.a>
+	!src <cbm/c64/vic.a>
+	!src <cbm/c64/sid.a>
+	!src <cbm/c64/cia1.a>
+	!src <cbm/c64/kernal.a>
+
+; driver enumeration
+	ENUM_JOYSTICK	= 0
+	ENUM_1351	= 1
+	ENUM_AMIGA	= 2
+	ENUM_ATARIST	= 3
+	ENUM_CX22	= 4
+	ENUM_TOTAL	= 5
+; helper values
+	BITMASK_ALL	= (1 << ENUM_TOTAL) - 1
+	MODIFIED8	= $ff
+!addr	MODIFIED16	= $ffff
+	BUTTON_PRESS	= %#......#	; these are written to top
+	BUTTON_NOPRESS	= %########	; row of sprite patterns
+; In the sprite coordinate system, the graphics pixel (0,0) has the
+; coordinates ($18, $32), so these are needed for converting. Blame the
+; VIC.
+	SPRITE_TO_WINDOW_X	= $18
+	SPRITE_TO_WINDOW_Y	= $32
+; maximum pointer coordinates (smaller than usual to force sprites to be visible)
+	MAX_COORD_X	= 320 - 24
+	MAX_COORD_Y	= 200 - 21
+
+!addr	sys_iirq	= $0314	; interrupt vector
+!addr	display_cia1b	= $0400 + 6	; show cia bits in upper left corner
+!addr	display_potx	= $0400 + 46	; and pot values
+!addr	display_poty	= $0400 + 86	;	below
+!addr	spr_ptr		= 2040	; sprite pointers
+
+; zp variables
+!addr	tmp		= $02
+!addr	state_now	= $fb
+!addr	state_previous	= $fc
+!addr	state_change	= $fd
+!addr	potx		= $fe	; potx and poty must be consecutive!
+!addr	poty		= $ff
+
+; basic header
+	* = $0801
+	!wo line2, 2016
+	!by $9e, $20	; "sys "
+	!by '0' + entry % 10000 / 1000
+	!by '0' + entry %  1000 /  100
+	!by '0' + entry %   100 /   10
+	!by '0' + entry %    10
+	!pet $3a, $8f, " saufbox", $0	; ":rem "
+line2	!wo 0
+
+table_x_lo	!by 70, 100, 130, 160, 190
+	* = table_x_lo + ENUM_TOTAL
+table_y_lo	!fill ENUM_TOTAL, 140
+
+table_x_hi	!fill ENUM_TOTAL
+table_y_hi	!fill ENUM_TOTAL
+
+max_x_lo	!fill ENUM_TOTAL, <MAX_COORD_X
+max_y_lo	!fill ENUM_TOTAL, <MAX_COORD_Y
+
+max_x_hi	!fill ENUM_TOTAL, >MAX_COORD_X
+max_y_hi	!fill ENUM_TOTAL, >MAX_COORD_Y
+; atm, 0 bytes left to next sprite block
+	!src "sprites.a"
+
+change1 ; call with X = target offset (0..ENUM_TOTAL for x change, +ENUM_TOTAL for y change) and Z = change
+; Z set means decrement, Z clear means increment
+		beq .decrement
+;.increment
+		inc table_x_lo, x
+		bne restrict
+		inc table_x_hi, x
+		jmp restrict
+
+.decrement	lda table_x_lo, x
+		bne +
+			dec table_x_hi, x
++		dec table_x_lo, x
+restrict ; restrict to valid range (0..ENUM_TOTAL for x, +ENUM_TOTAL for y)
+		lda table_x_hi, x
+		bmi .zero_it
+		cmp max_x_hi, x
+		bcc .rts
+		bne +
+			lda max_x_lo, x
+			cmp table_x_lo, x
+			bcs .rts
++		lda max_x_lo, x
+		ldy max_x_hi, x
+		jmp .set
+
+.zero_it	lda #0
+		tay
+.set		sta table_x_lo, x
+		tya
+		sta table_x_hi, x
+.rts		rts
+
+read_port ; get state of joyport
+		lda #0	; set port b to input
+		sta cia1_ddrb
+--			lda cia1_prb
+			cmp cia1_prb
+			bne --
+		tax	; X = current
+		eor state_previous	; A = change
+		ldy state_now	; Y = previous
+		sei
+		sta state_change
+		stx state_now
+		sty state_previous
+		cli
+		rts
+
+.help_text ; text to output after start
+		!pet petscii_LOWERCASE, petscii_CLEAR
+		!pet "$dc01:        ", petscii_CR
+		!pet "$d419:        ", petscii_CR
+		!pet "$d41a:        ", petscii_CR
+		!pet petscii_CR
+		!pet "This is mousetest, version 1.", petscii_CR
+		!pet "Plug mouse in joyport #1 and use it,", petscii_CR
+		!pet "then check which sprite moves correctly."
+		!pet petscii_CR
+		!pet "Button presses are shown in top line of", petscii_CR
+		!pet "sprite. Unfortunately there is no safe", petscii_CR
+		!pet "way to determine the state of additional"
+		!pet "buttons on Amiga and Atari mice.", petscii_CR
+		!pet petscii_CR
+		!pet "If none of the icons move, the mouse may"
+		!pet "be a 'NEOS mouse', which is not yet", petscii_CR
+		!pet "supported by this program.", 0
+
+--			jsr k_chrout
+			inc .help
+			bne +
+				inc .help + 1
++
+entry ; entry point for SYS
+.help = * + 1:	lda .help_text
+		bne --
+		cld
+++		; init sprite registers
+		ldy #0
+		sty vic_sdy	; no double height
+		sty vic_smc	; no multicolor
+		sty vic_sdx	; no double width
+		ldy #BITMASK_ALL
+		sty vic_sactive	; activate sprites
+		sty vic_sback	; priority
+		lda #int(sprites / 64) + ENUM_TOTAL - 1	; last sprite
+		sta .ptr
+		; set sprite block pointers
+		ldx #ENUM_TOTAL - 1
+--			lda #viccolor_GRAY3	; set sprite color
+			sta vic_cs0, x
+.ptr = * + 1:		lda #MODIFIED8	; set sprite pointer
+			sta spr_ptr, x
+			dec .ptr	; prepare for next iteration
+			dex
+			bpl --
+		; add to interrupt
+		lda sys_iirq
+		ldx sys_iirq + 1
+		sta mod16
+		stx mod16 + 1
+		; let irq vector point to driver code
+		lda #<my_irq
+		ldx #>my_irq
+		php
+		sei
+		sta sys_iirq
+		stx sys_iirq + 1
+		plp
+		; endless polling loop (amiga/atari mice must be polled as often as possible)
+-			jsr read_port
+			jsr amiga_idle
+			jsr atarist_idle
+			jsr cx22_idle
+			jmp -
+; interrupt
+my_irq ; 1351 and joystick need only be polled every once in a while...
+		lda sid_potx
+		sta potx
+		lda sid_poty
+		sta poty
+		jsr joystick_poll
+		jsr cbm1351_poll
+		jsr amiga_st_poll	; shared function for buttons
+		jsr cx22_poll
+		jsr screen_update
+; The initialisation routine sets the argument to the address of the
+; previous IRQ routine.
+mod16 = * + 1:	jmp MODIFIED16	; (self-modifying)
+
+
+screen_update ; update sprite positions and screen contents
+		; show current port bits in upper right corner
+		lda state_now
+		sta tmp
+		ldx #8
+--			lsr tmp
+			lda #'#'
+			bcs +
+				lda #'.'
++			sta display_cia1b - 1, x
+			dex
+			bne --
+		; show pot values below
+		lda potx
+		sta tmp
+		ldx #8
+--			lsr tmp
+			lda #'#'
+			bcs +
+				lda #'.'
++			sta display_potx - 1, x
+			dex
+			bne --
+		; show current port bits in upper right corner
+		lda poty
+		sta tmp
+		ldx #8
+--			lsr tmp
+			lda #'#'
+			bcs +
+				lda #'.'
++			sta display_poty - 1, x
+			dex
+			bne --
+		; update sprites
+		ldx #ENUM_TOTAL - 1
+--			; prepare Y to hold 2*X because sprite register layout is unfortunate
+			txa
+			asl
+			tay
+			; set x position
+			lda table_x_lo, x
+			clc
+			adc #SPRITE_TO_WINDOW_X
+			sta vic_xs0, y
+			; collect x overflow bits
+			lda table_x_hi, x
+			adc #0
+			lsr
+			rol tmp
+			; set y position
+			lda table_y_lo, x
+			clc
+			adc #SPRITE_TO_WINDOW_Y
+			sta vic_ys0, y
+			; high byte of y is unused
+			dex
+			bpl --
+		; fix x overflow
+		lda tmp
+		sta vic_msb_xs
+		rts
+
+	!src "joystick.a"
+	!src "1351.a"
+	!src "amiga.a"
+	!src "atarist.a"
+	!src "cx22.a"
+
+amiga_st_poll ; called via interrupt
+		; left button
+		ldy #BUTTON_NOPRESS
+		lda state_now
+		and #$10
+		bne +
+			ldy #BUTTON_PRESS
++		sty sprite_amiga	; O##
+		sty sprite_atarist	; O##
+
+!if 3=4 {
+commented out because real Amiga/Atari mice connect potx/poty to GND,
+which cannot be detected by C64. It only works in VICE.
+		; right button
+		ldy #BUTTON_NOPRESS
+		lda potx
+		bpl +
+			ldy #BUTTON_PRESS
++		sty sprite_amiga + 2	; ##O
+		sty sprite_atarist + 2	; ##O
+		; middle button
+		ldy #BUTTON_NOPRESS
+		lda poty
+		bpl +
+			ldy #BUTTON_PRESS
++		sty sprite_amiga + 1	; #O#
+		sty sprite_atarist + 1	; #O#
+}
+		rts

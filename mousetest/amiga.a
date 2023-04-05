@@ -1,0 +1,48 @@
+;ACME 0.95.7
+; driver for Amiga mouse
+
+; CIA #1, $dc01: %76543210
+;	bit7	bi6	bit5	bit4	bit3	bit2	bi1	bit0
+;	keyb,	keyb,	keyb,	LBUT,	XB,	YB,	XA,	YA
+
+; signal change sequences on pins 4321 (bits 3210):
+; '_' means don't care, "->" shows flow of time, all sequences wrap around
+; up	| _0_0 -> _1_0 -> _1_1 -> _0_1
+; down	| _0_0 -> _0_1 -> _1_1 -> _1_0
+; left	| 0_0_ -> 1_0_ -> 1_1_ -> 0_1_
+; right	| 0_0_ -> 0_1_ -> 1_1_ -> 1_0_
+
+	!zone amiga
+
+.transmogrified	!byte 0
+
+amiga_idle ; called as often as possible
+		lda state_now
+		lsr
+		lsr
+		eor state_now
+		sta .transmogrified
+; Amiga: ..., don't care, XA^XB, YA^YB
+	.BIT_XA	= %0010
+	.BIT_YA	= %0001
+	.TRANSMOGRIFIED_X	= %0010
+	.TRANSMOGRIFIED_Y	= %0001
+		; check for X change
+		lda state_change
+		and #.BIT_XA
+		beq +
+			; X coordinate has changed
+			ldx #ENUM_AMIGA
+			lda #.TRANSMOGRIFIED_X
+			bit .transmogrified
+			jsr change1
++		; check for Y change
+		lda state_change
+		and #.BIT_YA
+		beq +
+			; Y coordinate has changed
+			ldx #ENUM_AMIGA + ENUM_TOTAL	; means "y stuff"
+			lda #.TRANSMOGRIFIED_Y
+			bit .transmogrified
+			jsr change1
++		rts
