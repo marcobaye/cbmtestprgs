@@ -22,6 +22,20 @@
 .half_width	!word 0	; (buffered for speed increase)
 
 cbm1351_poll
+!if 3=4 {	; debug
+	lda .minimum
+	ldx #80-8-10
+	jsr show_bits
+	lda .limit
+	ldx #80-8
+	jsr show_bits
+	lda .minimum+1
+	ldx #120-8-10
+	jsr show_bits
+	lda .limit+1
+	ldx #120-8
+	jsr show_bits
+}
 		; mouse x
 		ldx #.X_STUFF
 		jsr .pot_delta
