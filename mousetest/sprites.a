@@ -5,12 +5,7 @@
 	!by .v >> 16, (.v >> 8) & 255, .v & 255
 }
 
-.hole
-		!align 63, 0
-sprites
-		!warn "Hole size is ", sprites - .hole, " bytes."
-
-	* = sprites + 64 * ENUM_JOYSTICK
+	* = sprites + 64 * ENUM_JOYSTICK, invisible
 		;	     765432107654321076543210
 sprite_joystick	+spriteline %########################
 		+spriteline %########################
@@ -34,7 +29,7 @@ sprite_joystick	+spriteline %########################
 		+spriteline %########...............#
 		+spriteline %########################
 
-	* = sprites + 64 * ENUM_1351
+	* = sprites + 64 * ENUM_1351, invisible
 		;	     765432107654321076543210
 sprite_1351	+spriteline %########################
 		+spriteline %##..###...###.....###..#
@@ -58,7 +53,7 @@ sprite_1351	+spriteline %########################
 		+spriteline %############..##########
 		+spriteline %########################
 
-	* = sprites + 64 * ENUM_AMIGA
+	* = sprites + 64 * ENUM_AMIGA, invisible
 		;	     765432107654321076543210
 sprite_amiga	+spriteline %########################
 		+spriteline %########..#..###########
@@ -82,7 +77,7 @@ sprite_amiga	+spriteline %########################
 		+spriteline %###.......#####........#
 		+spriteline %########################
 
-	* = sprites + 64 * ENUM_ATARIST
+	* = sprites + 64 * ENUM_ATARIST, invisible
 		;	     765432107654321076543210
 sprite_atarist	+spriteline %########################
 		+spriteline %##....###.#..#.##......#
@@ -106,7 +101,7 @@ sprite_atarist	+spriteline %########################
 		+spriteline %#...################...#
 		+spriteline %########################
 
-	* = sprites + 64 * ENUM_CX22
+	* = sprites + 64 * ENUM_CX22, invisible
 		;	     765432107654321076543210
 sprite_cx22	+spriteline %########################
 		+spriteline %##.##.#.#.#..#.##.###.##
@@ -129,5 +124,3 @@ sprite_cx22	+spriteline %########################
 		+spriteline %#.....#####..#####.....#
 		+spriteline %#...################...#
 		+spriteline %########################
-
-	* = sprites + 64 * ENUM_TOTAL - 1, overlay	; go on after sprites

@@ -3,8 +3,7 @@ support NEOS mouse
 support paddles
 find out how CMD smartmouse encodes middle button (same as MicroMys?)
 
-use RESTORE to increment NMI counter, check it in idle loop and reset
-positions (with sei/cli brackets)
+add sei/cli to position change
 
 disable CIA IRQ, use raster interrupt instead
 disable ROMs, use hardware irq/nmi vectors instead

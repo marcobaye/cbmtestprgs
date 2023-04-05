@@ -90,9 +90,17 @@ my_primm	pla	; get low byte of return address - 1
 		rts	; return to caller (after zero-terminated text)
 
 
-; atm, 8 bytes are free before the next sprite block:
-	!src "sprites.a"	; file will align sprites
+; NMI, called when user presses RESTORE
+my_nmi		inc reset_pos	; set flag so IRQ repositions sprites
+		; now call original nmi handler
+.ori_nmi = * + 1:jmp MODIFIED16
 
+
+; reserve space for sprites
+.hole	!align 63, 0
+sprites	!warn "There are ", sprites - .hole, " unused bytes before the sprites."	; atm, 2 bytes
+	!src "sprites.a"
+	* = sprites + 64 * ENUM_TOTAL - 1	; go on after sprites
 
 ; main program
 entry ; entry point for SYS
@@ -170,12 +178,6 @@ entry ; entry point for SYS
 			jsr atarist_idle
 			jsr cx22_idle
 			jmp --
-
-
-; NMI, called when user presses RESTORE
-my_nmi		inc reset_pos	; set flag so IRQ repositions sprites
-		; now call original nmi handler
-.ori_nmi = * + 1:jmp MODIFIED16
 
 
 ; IRQ, to poll joystick and 1351 (and Amiga/Atari buttons), and to update sprite positions
