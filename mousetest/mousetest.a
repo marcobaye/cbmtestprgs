@@ -8,6 +8,8 @@
 ; 12 Jun 2016	Fixed comments (version 1b).
 ;		Flipped joystick and 1351 sprites.
 ; 14 Jun 2016	Added primm to make re-startable and allowed reposition-on-restore (version 1c)
+; 16 Jun 2016	Fixed bug where each port change was reported twice (made amigatari use 2-pixel steps)
+;		Made Amiga/ST drivers act upon _every_ port change instead of just clk bits (version 1d)
 
 	!src <cbm/c64/petscii.a>
 	!src <cbm/c64/vic.a>
@@ -115,14 +117,20 @@ entry ; entry point for SYS
 	SCREENOFFSET_poty	= 8 + 2 * 40	; below
 !if SCREENOFFSET_poty > 256 - 8 { !error "X index would overrun in bit display" }
 		!pet petscii_CR
-		!pet "This is mousetest, version 1c.", petscii_CR
+		!pet "This is mousetest, version 1d.", petscii_CR
 		!pet "Plug mouse in joyport #1 and use it,", petscii_CR
 		!pet "then check which sprite moves correctly."
+		!pet petscii_CR
+		!pet petscii_CR
+		!pet petscii_CR
+		!pet petscii_CR
 		!pet petscii_CR
 		!pet "Button presses are shown in top line of", petscii_CR
 		!pet "sprite. Unfortunately there is no safe", petscii_CR
 		!pet "way to determine the state of additional"
 		!pet "buttons on Amiga and Atari mice.", petscii_CR
+		!pet petscii_CR
+		!pet "Press RESTORE to re-position sprites.", petscii_CR
 		!pet petscii_CR
 		!pet "If none of the icons move, the mouse may"
 		!pet "be a 'NEOS mouse', which is not yet", petscii_CR
@@ -172,11 +180,22 @@ entry ; entry point for SYS
 		stx sys_iirq + 1
 		plp
 		; endless polling loop (amiga/atari mice must be polled as often as possible)
---			jsr read_port
-			jsr amiga_idle
-			jsr atarist_idle
+----			; get state of joyport
+			lda #0	; set port b to input
+			sta cia1_ddrb
+--				lda cia1_prb
+				cmp cia1_prb
+				bne --
+			tax	; X = now
+			eor state_now	; A = change
+			sei
+			stx state_now
+			sta state_change
+			cli
+			; call drivers
+			jsr amiga_st_idle
 			jsr cx22_idle
-			jmp --
+			jmp ----
 
 
 ; IRQ, to poll joystick and 1351 (and Amiga/Atari buttons), and to update sprite positions
@@ -260,26 +279,16 @@ show_bits	sec	; make sure first ROL inserts a 1
 		rts
 
 
-; get state of joyport
-read_port	lda #0	; set port b to input
-		sta cia1_ddrb
---			lda cia1_prb
-			cmp cia1_prb
-			bne --
-		tax	; X = now
-		eor state_now	; A = change
-		sei
-		stx state_now
-		sta state_change
-		cli
-		rts
-
-
 ; helper function for Amiga/Atari mice, adds/subtracts 1
+; entry: X = target offset (0..ENUM_TOTAL for x change, +ENUM_TOTAL for y change)
+; KEEPS Y!
 ; Z set means decrement, Z clear means increment
-; call with X = target offset (0..ENUM_TOTAL for x change, +ENUM_TOTAL for y change) and Z = change
-change1		beq .decrement
-;.increment
+changeZ		beq .decrement
+		bne .increment
+; KEEPS Y!
+; C set means decrement, C clear means increment
+changeC		bcs .decrement
+.increment
 		inc table_x_lo, x
 		bne restrict
 			inc table_x_hi, x
@@ -291,6 +300,7 @@ change1		beq .decrement
 +		dec table_x_lo, x
 		;FALLTHROUGH
 ; restrict to valid range (0..ENUM_TOTAL for x, +ENUM_TOTAL for y)
+; KEEPS Y!
 restrict	lda table_x_hi, x
 		bmi .zero_it
 		cmp max_x_hi, x
@@ -300,59 +310,28 @@ restrict	lda table_x_hi, x
 			cmp table_x_lo, x
 			bcs .rts
 +		lda max_x_lo, x
-		ldy max_x_hi, x
-		jmp .set
-
-.zero_it	lda #0
-		tay
-.set		sta table_x_lo, x
-		tya
+		sta table_x_lo, x
+		lda max_x_hi, x
 		sta table_x_hi, x
 .rts		rts
 
-
-; button poll for Amiga and Atari, called via interrupt
-amiga_st_poll	; left button
-		ldy #BUTTON_NOPRESS
-		lda state_now
-		and #$10
-		bne +
-			ldy #BUTTON_PRESS
-+		sty sprite_amiga	; O##
-		sty sprite_atarist	; O##
-!if 3=4 {
-commented out because real Amiga/Atari mice connect potx/poty to GND,
-which cannot be detected by C64. It only works in VICE.
-		; right button
-		ldy #BUTTON_NOPRESS
-		lda potx
-		bpl +
-			ldy #BUTTON_PRESS
-+		sty sprite_amiga + 2	; ##O
-		sty sprite_atarist + 2	; ##O
-		; middle button
-		ldy #BUTTON_NOPRESS
-		lda poty
-		bpl +
-			ldy #BUTTON_PRESS
-+		sty sprite_amiga + 1	; #O#
-		sty sprite_atarist + 1	; #O#
-}
+.zero_it	lda #0
+		sta table_x_lo, x
+		sta table_x_hi, x
 		rts
 
 
 	!src "joystick.a"
 	!src "1351.a"
-	!src "amiga.a"
-	!src "atarist.a"
+	!src "amiga_st.a"
 	!src "cx22.a"
 
 
 ; tables
 initial_x_lo	!for .i, 0, ENUM_TOTAL - 1 {
-			!by 70 + .i * 30	; x lo
+			!by 70 + .i * 32	; x lo
 		}
-		!fill ENUM_TOTAL, 140	; y lo
+		!fill ENUM_TOTAL, 64	; y lo
 		!fill ENUM_TOTAL	; x hi
 		!fill ENUM_TOTAL	; y hi
 

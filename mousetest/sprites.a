@@ -105,7 +105,7 @@ sprite_1351	+spriteline %########################
 	* = sprites + 64 * ENUM_AMIGA, invisible
 		;	     765432107654321076543210
 sprite_amiga	+spriteline %########################
-		+spriteline %########..#..###########
+		+spriteline %########################
 		+spriteline %########..#..###########
 		+spriteline %#######..#..#######.####
 		+spriteline %#######..#..######..####
@@ -129,6 +129,7 @@ sprite_amiga	+spriteline %########################
 	* = sprites + 64 * ENUM_ATARIST, invisible
 		;	     765432107654321076543210
 sprite_atarist	+spriteline %########################
+		+spriteline %########################
 		+spriteline %##....###.#..#.##......#
 		+spriteline %#..##..##.#..#.####..###
 		+spriteline %#..######.#..#.####..###
@@ -138,9 +139,8 @@ sprite_atarist	+spriteline %########################
 		+spriteline %##....###.#..#.####..###
 		+spriteline %########..#..#..########
 		+spriteline %########..#..#..########
-		+spriteline %########..#..#..########
 		+spriteline %#######...#..#...#######
-		+spriteline %######...##..##...######
+		+spriteline %#######...#..#...#######
 		+spriteline %######...##..##...######
 		+spriteline %#####....##..##....#####
 		+spriteline %###.....###..###.....###
@@ -153,6 +153,7 @@ sprite_atarist	+spriteline %########################
 	* = sprites + 64 * ENUM_CX22, invisible
 		;	     765432107654321076543210
 sprite_cx22	+spriteline %########################
+		+spriteline %########################
 		+spriteline %##.##.#.#.#..#.##.###.##
 		+spriteline %#.#.#.#.#.#..#.#.#.#.#.#
 		+spriteline %#.####.##.#..#.###.###.#
@@ -162,9 +163,8 @@ sprite_cx22	+spriteline %########################
 		+spriteline %#########.#..#.#########
 		+spriteline %########..#..#..########
 		+spriteline %########..#..#..########
-		+spriteline %########..#..#..########
 		+spriteline %#######...#..#...#######
-		+spriteline %######...##..##...######
+		+spriteline %#######...#..#...#######
 		+spriteline %######...##..##...######
 		+spriteline %#####....##..##....#####
 		+spriteline %###.....###..###.....###

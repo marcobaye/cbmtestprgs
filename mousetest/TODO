@@ -1,13 +1,12 @@
 
 support NEOS mouse
 support paddles
+support koala pad?
 find out how CMD smartmouse encodes middle button (same as MicroMys?)
 
 add sei/cli to position change
 
 disable CIA IRQ, use raster interrupt instead
 disable ROMs, use hardware irq/nmi vectors instead
-
-act upon *every* state change in Amiga/Atari drivers
 
 use y-expanded sprites and make them look like mice?

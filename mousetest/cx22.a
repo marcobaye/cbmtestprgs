@@ -38,7 +38,7 @@ cx22_idle ; called as often as possible
 			ldx #ENUM_CX22
 			lda #.DIRBIT_X
 			bit state_now
-			jsr change1
+			jsr changeZ
 +		; check for Y change
 		lda state_change
 		and #.CLKBIT_Y
@@ -47,5 +47,5 @@ cx22_idle ; called as often as possible
 			ldx #ENUM_CX22 + ENUM_TOTAL	; means "y stuff"
 			lda #.DIRBIT_Y
 			bit state_now
-			jsr change1
+			jsr changeZ
 +		rts
