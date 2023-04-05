@@ -8,11 +8,21 @@
 ; signal change sequences on pins 4321 (bits 3210):
 ; '_' means don't care, "->" shows flow of time, all sequences wrap around
 ; up	| 00__ -> 01__ -> 11__ -> 10__
-; down	| 00__ -> 10__ -> 11__ -> 01__
+; down	| 00__ -> 10__ -> 11__ -> 01__	(y steps 0, 1, 2, 3)
 ; left	| __00 -> __01 -> __11 -> __10
-; right	| __00 -> __10 -> __11 -> __01
+; right	| __00 -> __10 -> __11 -> __01	(x steps 0, 1, 2, 3)
 
 	!zone atarist
+
+; "shared" format is %0cyy0cxx
+;	"c" bits are a pseudo-carry set before subtraction, so that doing two
+;	2-bit subtractions in one step is possible.
+;	"yy" is the step in y direction, converted from quadrature to monotonous
+;	"xx" is the step in x direction, converted from quadrature to monotonous
+atarist_to_shared	!byte %........, %......##, %.......#, %......#.
+			!byte %..##...., %..##..##, %..##...#, %..##..#.
+			!byte %...#...., %...#..##, %...#...#, %...#..#.
+			!byte %..#....., %..#...##, %..#....#, %..#...#.
 
 .transmogrified	!byte 0
 

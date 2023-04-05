@@ -8,41 +8,59 @@
 ; signal change sequences on pins 4321 (bits 3210):
 ; '_' means don't care, "->" shows flow of time, all sequences wrap around
 ; up	| _0_0 -> _1_0 -> _1_1 -> _0_1
-; down	| _0_0 -> _0_1 -> _1_1 -> _1_0
+; down	| _0_0 -> _0_1 -> _1_1 -> _1_0	(y steps 0, 1, 2, 3)
 ; left	| 0_0_ -> 1_0_ -> 1_1_ -> 0_1_
-; right	| 0_0_ -> 0_1_ -> 1_1_ -> 1_0_
+; right	| 0_0_ -> 0_1_ -> 1_1_ -> 1_0_	(x steps 0, 1, 2, 3)
 
 	!zone amiga
 
-.transmogrified	!byte 0
+; "shared" format is %yycxx000
+;	"c" bit is a pseudo-carry set before subtraction, so that doing two
+;	2-bit subtractions in one step is possible.
+;	"yy" is the step in y direction, converted from quadrature to monotonous
+;	"xx" is the step in x direction, converted from quadrature to monotonous
+amiga_to_shared	!byte %........, %.#......, %....#..., %.#..#...
+		!byte %##......, %#......., %##..#..., %#...#...
+		!byte %...##..., %.#.##..., %...#...., %.#.#....
+		!byte %##.##..., %#..##..., %##.#...., %#..#....
 
 amiga_idle ; called as often as possible
 		lda state_now
-		lsr
-		lsr
-		eor state_now
-		sta .transmogrified
-; Amiga: ..., don't care, XA^XB, YA^YB
-	.BIT_XA	= %0010
-	.BIT_YA	= %0001
-	.TRANSMOGRIFIED_X	= %0010
-	.TRANSMOGRIFIED_Y	= %0001
-		; check for X change
-		lda state_change
-		and #.BIT_XA
-		beq +
+		and #%....####	; keep only quadrature bits
+		tax
+		lda amiga_to_shared, x	; convert Amiga quadrature signal to internal format
+		pha	; remember for later (when writing ".prev")
+		ora #%..#.....	; set pseudo carry so subtraction works as expected
+		sec
+.prev = * + 1:	sbc #MODIFIED8	; calculate y and x changes
+; %00	no change
+; %01	+1
+; %10	no change (actually forbidden/invalid)
+; %11	-1
+		; check for y change
+		asl	; C = change (inverted!), now N = "something changed!"
+		bpl +
+			; Y coordinate has changed
+			pha
+			ldx #ENUM_AMIGA + ENUM_TOTAL	; means "y stuff"
+;FIXME - fix "change1" to use C instead of Z!
+			lda #1	; nonzero means incr
+			bcc +++
+				lsr	; zero means decr
++++			jsr change1
+			pla
++		; check for x change
+		asl	; N = pseudo-carry
+		asl	; N = change (inverted!)
+		asl	; C = change (inverted!), now N = "something changed!"
+		bpl +
 			; X coordinate has changed
 			ldx #ENUM_AMIGA
-			lda #.TRANSMOGRIFIED_X
-			bit .transmogrified
-			jsr change1
-+		; check for Y change
-		lda state_change
-		and #.BIT_YA
-		beq +
-			; Y coordinate has changed
-			ldx #ENUM_AMIGA + ENUM_TOTAL	; means "y stuff"
-			lda #.TRANSMOGRIFIED_Y
-			bit .transmogrified
-			jsr change1
-+		rts
+			lda #1	; nonzero means decr
+			bcc +++
+				lsr	; zero means decr
++++			jsr change1
++		; store for next time
+		pla
+		sta .prev
+		rts
