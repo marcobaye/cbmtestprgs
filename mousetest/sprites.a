@@ -1,6 +1,8 @@
 ;ACME 0.95.7
 ; sprite patterns
 
+!zone sprites {
+
 !macro spriteline .v {
 	!by .v >> 16, (.v >> 8) & 255, .v & 255
 }
@@ -205,3 +207,4 @@ sprite_koala	+spriteline %########################
 	* = sprites + 64 * ENUM_TOTAL - 1	; go on after sprites
 
 	!warn "There are ", sprites - .hole, " unused bytes before the sprites."	; atm, 2 bytes
+}

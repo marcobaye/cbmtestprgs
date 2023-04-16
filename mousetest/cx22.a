@@ -13,11 +13,11 @@
 ; right	| __01 -> __11
 
 	!zone cx22
-	.BUTTON		= %10000
-	.CLKBIT_Y	= %01000
-	.DIRBIT_Y	= %00100
-	.CLKBIT_X	= %00010
-	.DIRBIT_X	= %00001
+	.BUTTON		= %...#....
+	.CLKBIT_Y	= %....#...
+	.DIRBIT_Y	= %.....#..
+	.CLKBIT_X	= %......#.
+	.DIRBIT_X	= %.......#
 
 cx22_poll ; called via interrupt
 		; button(s)
