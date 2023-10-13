@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-
+"""
+for accessing commodore disc image files
+"""
 import argparse
 import sys  # for sys.stderr and sys.exit
 
 # this library accepts disk images with error info, but atm does not honor it!
 
-debuglevel = 1
+_debuglevel = 1
 
 def debug(minlevel, *unnamed, **named):
     """Helper function for debugging output."""
-    if debuglevel >= minlevel:
+    if _debuglevel >= minlevel:
         print("debug%d:" % minlevel, *unnamed, **named)
 
 def popcount(integer):
@@ -35,7 +37,20 @@ def _bam_offset_and_bit(sector):
 class d64(object):
     """
     This class describes a cbm disc image. There are subclasses for 1541/40track/1571/1581.
+
+    Data fields:
+        name: the name of the format, e.g. "1581"
+        blocks_total: the number of 256-byte blocks per image file
+        maxtrack: highest track number
+        header_ts: track and sector of header block
+        header_name_offset: byte offset of disc name in header block
+        directory_ts: track and sector of first directory block
+        std_max_dir_entries: maximum number of directory entries
+        std_directory_interleave: block interleave for directory
+        std_file_interleave: block interleave for files
+        track_length_changes: dict with "new" sectors-per-track value (TODO - use!)
     """
+
     def __init__(self):
         raise Exception("Only subclasses (d41, d71, d81) can be instantiated!")
 
@@ -133,6 +148,7 @@ class d64(object):
         else:
             debug(1, "Nothing changed, no need to flush to disk.")
 
+    # TODO - add a wrapper fn for this one with fewer args (for everything except second side of 1571):
     def _check_totals(self, firsttrack, howmanytracks, total_offset_step, total_ts, bitsbytes, bits_offset_step, bits_ts=None):
         """
         Helper function to compare free blocks totals to free blocks bitmaps.
@@ -451,6 +467,7 @@ class _d81(d64):
     std_max_dir_entries = 296   # for writing directory
     std_directory_interleave = 1    # 1581 uses interleave 1 because of track cache
     std_file_interleave = 1 # 1581 uses interleave 1 because of track cache
+    track_length_changes = {1: 40}  # all tracks have 40 sectors
 
     def __init__(self):
         # this inhibits the base class's exception...
@@ -512,6 +529,7 @@ class _d41(d64):
     std_max_dir_entries = 144   # for writing directory
     std_directory_interleave = 3
     std_file_interleave = 10
+    track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17}
 
     def __init__(self):
         # build lookup tables for "sectors per track" and "blocks before track"
@@ -583,6 +601,7 @@ class _d71(_d41):
     blocks_total = 2 * 683
     maxtrack = 70
     std_file_interleave = 6
+    track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17, 35+1: 21, 35+18: 19, 35+25: 18, 35+31: 17}
 
     def __init__(self):
         super().__init__()  # let 1541 class build the lookup tables...
@@ -633,11 +652,155 @@ class _d71(_d41):
         return ts
 
 ################################################################################
+# experimental 8050 class
+
+class _d80(_d41):
+    name = "8050"
+    blocks_total = 2083 # 2052 free?
+    maxtrack = 77
+    header_ts = (39, 0)
+    header_name_offset = 6  # diskname and five-byte "pseudo id"
+    directory_ts = (39, 1)
+    std_max_dir_entries = 224   # for writing directory
+    #std_directory_interleave = 3   ?
+    #std_file_interleave = 10       ?
+    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23}
+
+    def __init__(self):
+        # build lookup tables for "sectors per track" and "blocks before track"
+        self._sectors_of_track = {}
+        self._blocks_before_track = {}
+        lba = 0
+        for track in range(1, self.maxtrack + 1):
+            if track <= 39:
+                sectors = 29
+            elif track <= 53:
+                sectors = 27
+            elif track <= 64:
+                sectors = 25
+            else:
+                sectors = 23
+            self._sectors_of_track[track] = sectors
+            self._blocks_before_track[track] = lba
+            lba += sectors
+
+    def bam_check(self):
+        debug(1, "Checking 8050 BAM")
+        self._check_totals(1, 50, (6, 5), (38, 0), 4, (7, 5))
+        self._check_totals(51, 27, (6, 5), (38, 3), 4, (7, 5))
+
+    def read_free_blocks(self):
+        d = dict()
+        self._fill_free_blocks_dict(d, 1, 50, (6, 5), (38, 0))
+        self._fill_free_blocks_dict(d, 51, 27, (6, 5), (38, 3))
+        return d
+
+    def release_blocks(self, set_of_ts):
+        bamblock380 = self.read_ts(38, 0)
+        bamblock383 = self.read_ts(38, 3)
+        dirty380 = False
+        dirty383 = False
+        for track, sector in set_of_ts:
+            if track <= 50:
+                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
+                dirty380 = True
+            else:
+                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
+                dirty383 = True
+        if dirty380:
+            self.write_ts(38, 0, bamblock380)
+        if dirty383:
+            self.write_ts(38, 3, bamblock383)
+
+    def try_to_allocate(self, track, sector, exact):
+        if track <= 50:
+            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
+        else:
+            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
+        return ts
+
+################################################################################
+# experimental 8250 / SFD-1001 class
+
+class _d82(_d80):
+    name = "8250"
+    blocks_total = 4166 # 4133 free
+    maxtrack = 154
+    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
+
+    def __init__(self):
+        super().__init__()  # let 8050 class build the lookup tables...
+        # ...and now fix them for tracks 78..154:
+        lba = self._blocks_before_track[78] # lba of "second half"
+        for track in range(78, self.maxtrack + 1):
+            sectors = self._sectors_of_track[track - 77]
+            self._sectors_of_track[track] = sectors # use the same values for tracks 78..154 as for tracks 1..77
+            self._blocks_before_track[track] = lba
+            lba += sectors
+
+    def bam_check(self):
+        debug(1, "Checking 8250 BAM")
+        self._check_totals(1, 50, (6, 5), (38, 0), 4, (7, 5))
+        self._check_totals(51, 50, (6, 5), (38, 3), 4, (7, 5))
+        self._check_totals(101, 50, (6, 5), (38, 6), 4, (7, 5))
+        self._check_totals(151, 4, (6, 5), (38, 9), 4, (7, 5))
+
+    def read_free_blocks(self):
+        d = dict()
+        self._fill_free_blocks_dict(d, 1, 50, (6, 5), (38, 0))
+        self._fill_free_blocks_dict(d, 51, 50, (6, 5), (38, 3))
+        self._fill_free_blocks_dict(d, 101, 50, (6, 5), (38, 6))
+        self._fill_free_blocks_dict(d, 151, 4, (6, 5), (38, 9))
+        return d
+
+    def release_blocks(self, set_of_ts):
+        bamblock380 = self.read_ts(38, 0)
+        bamblock383 = self.read_ts(38, 3)
+        bamblock386 = self.read_ts(38, 6)
+        bamblock389 = self.read_ts(38, 9)
+        dirty380 = False
+        dirty383 = False
+        dirty386 = False
+        dirty389 = False
+        for track, sector in set_of_ts:
+            if track <= 50:
+                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
+                dirty380 = True
+            elif track <= 100:
+                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
+                dirty383 = True
+            elif track <= 150:
+                self._release_block((track, sector), track - 101, (6, 5), bamblock386, (7, 5))
+                dirty386 = True
+            else:
+                self._release_block((track, sector), track - 151, (6, 5), bamblock389, (7, 5))
+                dirty389 = True
+        if dirty380:
+            self.write_ts(38, 0, bamblock380)
+        if dirty383:
+            self.write_ts(38, 3, bamblock383)
+        if dirty386:
+            self.write_ts(38, 6, bamblock386)
+        if dirty389:
+            self.write_ts(38, 9, bamblock389)
+
+    def try_to_allocate(self, track, sector, exact):
+        if track <= 50:
+            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
+        elif track <= 100:
+            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
+        elif track <= 150:
+            ts = self._try_to_allocate((track, sector), track - 101, (6, 5), (38, 6), (7, 5), exact=exact)
+        else:
+            ts = self._try_to_allocate((track, sector), track - 151, (6, 5), (38, 9), (7, 5), exact=exact)
+        return ts
+
+################################################################################
 # wrapper stuff
 
 # collect supported sizes and largest of them so files can be identified
 _type_of_size = dict()
-for imgtype in (_d41, _d41_40, _d71, _d81):
+for imgtype in (_d41, _d41_40, _d71, _d81, _d80, _d82):
     _type_of_size[imgtype.blocks_total * 256] = (imgtype, False)    # no error info
     _type_of_size[imgtype.blocks_total * 257] = (imgtype, True) # with error info
 _largest_size = max(_type_of_size.keys())
@@ -792,7 +955,7 @@ def process_file(file, second_charset, full=False):
     show_directory(img, second_charset, full=full)
 
 def main():
-    global debuglevel
+    global _debuglevel
     if len(sys.argv) == 1:
         sys.argv.append("-h")   # if run without arguments, show help instead of complaining!
     parser = argparse.ArgumentParser(allow_abbrev = False, description =
@@ -806,7 +969,7 @@ If run directly, the directory of the given file(s) is displayed.
     parser.add_argument("-f", "--full", action="store_true", help="Show hidden data as well.")
     parser.add_argument("files", metavar="IMAGEFILE.D64", nargs='+', help="Disk image file.")
     args = parser.parse_args()
-    debuglevel += args.debug
+    _debuglevel += args.debug
     for file in args.files:
         process_file(file, args.charset, full=args.full)
 
