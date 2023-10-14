@@ -9,12 +9,12 @@ import sys  # for sys.stderr and sys.exit
 
 _debuglevel = 1
 
-def debug(minlevel, *unnamed, **named):
+def _debug(minlevel, *unnamed, **named):
     """Helper function for debugging output."""
     if _debuglevel >= minlevel:
         print("debug%d:" % minlevel, *unnamed, **named)
 
-def popcount(integer):
+def _popcount(integer):
     """Helper function to check bit fields in BAM."""
     counted = 0
     while integer:
@@ -38,18 +38,19 @@ class d64(object):
     """
     This class describes a cbm disc image. There are subclasses for 1541/40track/1571/1581.
 
-    Data fields:
+    Constants:
         name: the name of the format, e.g. "1581"
         blocks_total: the number of 256-byte blocks per image file
-        maxtrack: highest track number
+        maxtrack: highest track number (lowest is always 1)
         header_ts: track and sector of header block
         header_name_offset: byte offset of disc name in header block
         directory_ts: track and sector of first directory block
         std_max_dir_entries: maximum number of directory entries
         std_directory_interleave: block interleave for directory
         std_file_interleave: block interleave for files
-        track_length_changes: dict with "new" sectors-per-track value (TODO - use!)
+        track_length_changes: dict with "new" sectors-per-track value
     """
+    # TODO - merge header_ts and header_name_offset?
 
     def __init__(self):
         raise Exception("Only subclasses (d41, d71, d81) can be instantiated!")
@@ -63,7 +64,17 @@ class d64(object):
         self.readonly = readonly    # we don't really need to store this info
         self.writebackmode = writeback  # in three vars, but it might make
         self.writethroughmode = writethrough    # the code more readable.
-        self.dirty = False  # no need to writeback yet
+        self.need_writeback = False
+        # build lookup tables for "sectors per track" and "blocks before track":
+        self._sectors_of_track = {}
+        self._blocks_before_track = {}
+        lba = 0
+        sectors = None  # sanity check, triggers exception if length of t1 is not specified
+        for track in range(1, self.maxtrack + 1):
+            sectors = self.track_length_changes.get(track, sectors) # get new length or keep old one
+            self._sectors_of_track[track] = sectors
+            self._blocks_before_track[track] = lba
+            lba += sectors
 
     def _check_track_num(self, track):
         """_check_track_num(int)
@@ -75,11 +86,12 @@ class d64(object):
         if track > self.maxtrack:
             raise Exception("Exceeded maximum track number.")
 
-    def _check_ts(self, track, sector):
-        """_check_ts(int, int)
+    def _check_ts(self, ts):
+        """_check_ts((int, int))
 
         Throw exception if track/sector address is invalid for this image type.
         """
+        track, sector = ts
         self._check_track_num(track)
         # now check sector number
         if sector < 0:
@@ -96,37 +108,40 @@ class d64(object):
         Return number of sectors in given track.
         Sector numbers start at 0, so the maximum sector number is one less than this.
         """
-        self._virtualfn()
+        self._check_track_num(track)
+        return self._sectors_of_track[track]
 
-    def ts_to_lba(self, track, sector):
-        """ts_to_lba(int, int) -> int
+    def ts_to_lba(self, ts):
+        """ts_to_lba((int, int)) -> int
 
-        Convert track and sector to logical block addressing (0-based block number).
+        Convert track and sector to logical block address (0-based block number).
         """
-        self._virtualfn()
+        self._check_ts(ts)
+        track, sector = ts
+        return self._blocks_before_track[track] + sector
 
-    def read_ts(self, track, sector):
+    def read_ts(self, ts):
         """
-        Read block given via track/sector number and return as bytes or bytearray.
+        Read block indicated via track/sector tuple and return as bytes or bytearray.
         """
-        debug(2, "Reading t%d s%d." % (track, sector))
-        self._check_ts(track, sector)
-        offset = 256 * self.ts_to_lba(track, sector)
+        _debug(2, "Reading t%d s%d." % ts)
+        self._check_ts(ts)
+        offset = 256 * self.ts_to_lba(ts)
         block = self.body[offset:offset+256]
         return block
 
-    def write_ts(self, track, sector, data):
+    def write_ts(self, ts, data):
         """
-        Write data to block given via track/sector number.
+        Write data to block indicated via track/sector tuple.
         """
         if len(data) != 256:
             raise Exception("block should be 256 bytes")
-        debug(2, "Writing t%d s%d." % (track, sector))
-        self._check_ts(track, sector)
-        offset = 256 * self.ts_to_lba(track, sector)
+        _debug(2, "Writing t%d s%d." % ts)
+        self._check_ts(ts)
+        offset = 256 * self.ts_to_lba(ts)
         self.body[offset:offset+256] = data # will crash in readonly mode!
         if self.writebackmode:
-            self.dirty = True
+            self.need_writeback = True
         else:
             # writethrough mode
             self.fh.seek(offset)
@@ -139,61 +154,57 @@ class d64(object):
         """
         if not self.writebackmode:
             raise Exception("writeback was called outside of writeback mode")
-        if self.dirty:
-            debug(1, "Flushing to disk.")
+        if self.need_writeback:
+            _debug(1, "Flushing to disk.")
             self.fh.seek(0)
             self.fh.write(self.body)
             self.fh.flush()
-            self.dirty = False
+            self.need_writeback = False
         else:
-            debug(1, "Nothing changed, no need to flush to disk.")
+            _debug(1, "Nothing changed, no need to flush to disk.")
 
-    # TODO - add a wrapper fn for this one with fewer args (for everything except second side of 1571):
-    def _check_totals(self, firsttrack, howmanytracks, total_offset_step, total_ts, bitsbytes, bits_offset_step, bits_ts=None):
+    def _check_totals(self, ts, first_byte_offset, size, howmanytracks, firsttrack):
         """
         Helper function to compare free blocks totals to free blocks bitmaps.
+
+        This fn is not used for second side of 1571, where data is split over two blocks.
+
+        ts: track and sector where data is stored
+        first_byte_offset: offset of data in block
+        size: bytes per entry
+        howmanytracks: number of entries to process
         firsttrack: number to add to zero-based loop counter to get meaningful debug/error messages
-        howmanytracks: number of entries to check
-        total_offset_step: offset of first total in block, and step size to get to the next total
-        total_ts: track and sector where totals are stored
-        bitsbytes: length of bitmap in bytes
-        bits_offset_step: offset of first bitmap in block, and step size to get to the next bitmap
-        bits_ts: track and sector where bitmaps are stored (if different from total_ts)
         """
-        total_block = self.read_ts(*total_ts)
-        if bits_ts == None:
-            bits_block = total_block
-        else:
-            bits_block = self.read_ts(*bits_ts)
-        total_offset, total_step = total_offset_step
-        bits_offset, bits_step = bits_offset_step
+        block = self.read_ts(ts)
         for entry in range(howmanytracks):
             track = entry + firsttrack
-            total = total_block[total_offset + entry * total_step]
+            total = block[first_byte_offset + entry * size]
             sum = 0
-            for i in range(bitsbytes):
-                sum += popcount(bits_block[bits_offset + entry * bits_step + i])
+            for i in range(size - 1):
+                sum += _popcount(block[first_byte_offset + entry * size + 1 + i])
             if total == sum:
-                debug(9, "track %d: %d free blocks" % (track, sum))
+                _debug(9, "track %d: %d free blocks" % (track, sum))
             else:
                 print("BAM error for track %d: counter says %d, bitfield says %d!" % (track, total, sum), file=sys.stderr)
 
-    def _fill_free_blocks_dict(self, d, firsttrack, howmanytracks, offset_step, ts):
+    def _fill_free_blocks_dict(self, d, ts, offset, step, howmanytracks, firsttrack):
         """
         Helper function to read "free blocks" numbers from BAM.
+
         d: dictionary to put results in
-        firsttrack: number to add to zero-based loop counter to get track number
-        howmanytracks: number of entries to process
-        offset_step: offset of first number in block, and step size to get to the next one
         ts: track and sector where numbers are stored
+        offset: offset of first entry in block
+        step: step size to get to the next entry
+        howmanytracks: number of entries to process
+        firsttrack: number to add to zero-based loop counter to get track number
+
         The directory track is included in "all", but not in "shown"!
         """
         if "all" not in d:
             d["all"] = 0
         if "shown" not in d:
             d["shown"] = 0
-        offset, step = offset_step
-        block = self.read_ts(*ts)
+        block = self.read_ts(ts)
         for entry in range(howmanytracks):
             track = entry + firsttrack
             freeblocks = block[offset + entry * step]
@@ -217,19 +228,21 @@ class d64(object):
         """
         track, sector = self.header_ts
         of = self.header_name_offset
-        block = self.read_ts(track, sector)
+        block = self.read_ts((track, sector))
         return block[of:of+16], block[of+18:of+23]
 
     def read_free_blocks(self):
         """
         Return dictionary of free blocks per track. There are three additional keys,
-        "shown", "dir" and "all", where "shown"+"dir"="all"
+        "shown", "dir" and "all", where "shown" + "dir" == "all"
         """
         self._virtualfn()
 
+    # TODO - simplify for non-1571 and give 1571 its own version
     def _release_block(self, ts, entry, totals_offset_step, totals_block, bitmaps_offset_step, bitmaps_block=None):
         """
         Helper function to release a single block in BAM.
+
         ts: track (for debugging output) and sector (to determine bit position)
         entry: which one of totals/bitmaps to use
         totals_offset_step: where to find totals
@@ -260,6 +273,7 @@ class d64(object):
         Helper function to allocate a single block in BAM.
         If block is available, allocate it and return t/s.
         If block is not available, return None.
+
         wanted_ts: track and sector to allocate
         entry: which one of totals/bitmaps to use
         totals_offset_step: where to find totals
@@ -271,12 +285,12 @@ class d64(object):
         # process args
         track, wanted_sector = wanted_ts
         totals_offset, totals_step = totals_offset_step
-        totals_block = self.read_ts(*totals_ts)
+        totals_block = self.read_ts(totals_ts)
         bitmaps_offset, bitmaps_step = bitmaps_offset_step
         if bitmaps_ts == None:
             bitmaps_block = totals_block
         else:
-            bitmaps_block = self.read_ts(*bitmaps_ts)
+            bitmaps_block = self.read_ts(bitmaps_ts)
         # calculate offsets
         bitmaps_offset += entry * bitmaps_step
         totals_offset += entry * totals_step
@@ -296,12 +310,12 @@ class d64(object):
                 else:
                     raise Exception("BAM is corrupt, totals do not match bitmap.")
                 # write bam block(s)
-                self.write_ts(*totals_ts, totals_block)
+                self.write_ts(totals_ts, totals_block)
                 if bitmaps_block != totals_block:
-                    self.write_ts(*bitmaps_ts, bitmaps_block)
-                debug(2, "Allocated t/s", track, cand_sector)
+                    self.write_ts(bitmaps_ts, bitmaps_block)
+                _debug(2, "Allocated t/s", track, cand_sector)
                 return track, cand_sector   # block has been allocated
-            debug(3, "t/s", track, cand_sector, "is not available")
+            _debug(3, "t/s", track, cand_sector, "is not available")
             if exact:
                 break   # fail (the wanted sector is not available)
             # try the next sector on this track:
@@ -336,11 +350,11 @@ class d64(object):
                 raise Exception("Directory loops back to itself, please check disk image!")
             all_used_ts.add((track, sector))
             # read a directory sector
-            block = self.read_ts(track, sector)
+            block = self.read_ts((track, sector))
             track = block[0]
             sector = block[1]
             if track == 0:
-                debug(2, "Last! Link is t%d s%d." % (track, sector))
+                _debug(2, "Last! Link is t%d s%d." % (track, sector))
             readidx = 2
             for i in range(8):
                 bin30 = block[readidx:readidx+30]
@@ -367,9 +381,9 @@ class d64(object):
                 raise Exception("Directory loops back to itself, please check disk image!")
             all_used_ts.add((track, sector))
             # read a directory sector
-            block = self.read_ts(track, sector)
+            block = self.read_ts((track, sector))
             if block[0] == 0:
-                debug(2, "Last! Link is t%d s%d." % (block[0], block[1]))
+                _debug(2, "Last! Link is t%d s%d." % (block[0], block[1]))
             if init_link_ptrs:
                 block[0:2] = 0x00, 0xff # init fresh dir block
             writeidx = 2
@@ -386,14 +400,14 @@ class d64(object):
             # now for the interesting part, enlarging/shrinking directory:
             if len(new_dir) and next_track == 0:
                 # we have more data but no block to put it
-                block[0:2] = self.get_new_block(track, sector) # get a new block and let current block point to it
+                block[0:2] = self.get_new_block((track, sector))    # get a new block and let current block point to it
                 init_link_ptrs = True   # make sure link pointers get overwritten with 00/ff from now on
             elif len(new_dir) == 0 and next_track:
                 # we have more block(s) but no data for them
-                self.free_block_chain(next_track, next_sector)  # free all following blocks
+                self.free_block_chain((next_track, next_sector))    # free all following blocks
                 block[0:2] = 0x00, 0xff # mark this block as final
             # write back
-            self.write_ts(track, sector, block)
+            self.write_ts((track, sector), block)
             # get (potentially modified) link ptr
             track, sector = block[0:2]
         # "track" is zero, so there is no next block
@@ -417,10 +431,11 @@ class d64(object):
         # and then there are 11 bytes for various (DOS/GEOS) purposes, all 0 here
         return entry
 
-    def get_new_block(self, prev_track, prev_sector):
+    def get_new_block(self, prev_ts):
         """
         Find and allocate a new block after given block, return t/s.
         """
+        prev_track, prev_sector = prev_ts
         cand_track = prev_track
         # to get a candidate sector, add interleave:
         if cand_track == self.directory_ts[0]:
@@ -439,10 +454,11 @@ class d64(object):
             raise Exception("Directory track is full!")
         return ts   # return track and sector
 
-    def free_block_chain(self, track, sector):
+    def free_block_chain(self, ts):
         """
         Free all connected blocks, following the chain of link pointers.
         """
+        track, sector = ts
         all_used_ts = set()
         while track:
             # sanity check
@@ -450,7 +466,7 @@ class d64(object):
                 raise Exception("Block chain loops back to itself, please check disk image!")
             all_used_ts.add((track, sector))
             # read block, free it, go on with link
-            block = self.read_ts(track, sector)
+            block = self.read_ts((track, sector))
             track, sector = block[0:2]
         self.release_blocks(all_used_ts)
 
@@ -473,28 +489,20 @@ class _d81(d64):
         # this inhibits the base class's exception...
         pass    # ...but there is nothing to do!
 
-    def sectors_of_track(self, track):
-        self._check_track_num(track)
-        return 40
-
-    def ts_to_lba(self, track, sector):
-        self._check_ts(track, sector)
-        return (track - 1) * 40 + sector
-
     def bam_check(self):
-        debug(1, "Checking 1581 BAM")
-        self._check_totals(1, 40, (16, 6), (40, 1), 5, (17, 6))
-        self._check_totals(41, 40, (16, 6), (40, 2), 5, (17, 6))
+        _debug(1, "Checking 1581 BAM")
+        self._check_totals((40, 1), 16, 6, 40, 1)   # FIXME - put numbers in class vars like "BAM1/BAM2" lists?
+        self._check_totals((40, 2), 16, 6, 40, 41)
 
     def read_free_blocks(self):
         d = dict()
-        self._fill_free_blocks_dict(d, 1, 40, (16, 6), (40, 1))
-        self._fill_free_blocks_dict(d, 41, 40, (16, 6), (40, 2))
+        self._fill_free_blocks_dict(d, (40, 1), 16, 6, 40, 1)
+        self._fill_free_blocks_dict(d, (40, 2), 16, 6, 40, 41)
         return d
 
     def release_blocks(self, set_of_ts):
-        bamblock1 = self.read_ts(40, 1)
-        bamblock2 = self.read_ts(40, 2)
+        bamblock1 = self.read_ts((40, 1))
+        bamblock2 = self.read_ts((40, 2))
         dirty1 = False
         dirty2 = False
         for track, sector in set_of_ts:
@@ -505,9 +513,9 @@ class _d81(d64):
                 self._release_block((track, sector), track - 41, (16, 6), bamblock2, (17, 6))
                 dirty2 = True
         if dirty1:
-            self.write_ts(40, 1, bamblock1)
+            self.write_ts((40, 1), bamblock1)
         if dirty2:
-            self.write_ts(40, 2, bamblock2)
+            self.write_ts((40, 2), bamblock2)
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 40:
@@ -532,48 +540,26 @@ class _d41(d64):
     track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17}
 
     def __init__(self):
-        # build lookup tables for "sectors per track" and "blocks before track"
-        self._sectors_of_track = {}
-        self._blocks_before_track = {}
-        lba = 0
-        for track in range(1, self.maxtrack + 1):
-            if track <= 17:
-                sectors = 21
-            elif track <= 24:
-                sectors = 19
-            elif track <= 30:
-                sectors = 18
-            else:
-                sectors = 17
-            self._sectors_of_track[track] = sectors
-            self._blocks_before_track[track] = lba
-            lba += sectors
-
-    def sectors_of_track(self, track):
-        self._check_track_num(track)
-        return self._sectors_of_track[track]
-
-    def ts_to_lba(self, track, sector):
-        self._check_ts(track, sector)
-        return self._blocks_before_track[track] + sector
+        # this inhibits the base class's exception...
+        pass    # ...but there is nothing to do!
 
     def bam_check(self):
-        debug(1, "Checking 1541 BAM")
-        self._check_totals(1, 35, (4, 4), (18, 0), 3, (5, 4))
+        _debug(1, "Checking 1541 BAM")
+        self._check_totals((18, 0), 4, 4, 35, 1)
 
     def read_free_blocks(self):
         d = dict()
-        self._fill_free_blocks_dict(d, 1, 35, (4, 4), (18, 0))
+        self._fill_free_blocks_dict(d, (18, 0), 4, 4, 35, 1)
         return d
 
     def release_blocks(self, set_of_ts):
-        bamblock = self.read_ts(18, 0)
+        bamblock = self.read_ts((18, 0))
         dirty = False
         for track, sector in set_of_ts:
             self._release_block((track, sector), track - 1, (4, 4), bamblock, (5, 4))
             dirty = True
         if dirty:
-            self.write_ts(18, 0, bamblock)
+            self.write_ts((18, 0), bamblock)
 
     def try_to_allocate(self, track, sector, exact):
         return self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)
@@ -603,32 +589,35 @@ class _d71(_d41):
     std_file_interleave = 6
     track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17, 35+1: 21, 35+18: 19, 35+25: 18, 35+31: 17}
 
-    def __init__(self):
-        super().__init__()  # let 1541 class build the lookup tables...
-        # ...and now fix them for tracks 36..70:
-        lba = self._blocks_before_track[36] # lba of "second half"
-        for track in range(36, self.maxtrack + 1):
-            sectors = self._sectors_of_track[track - 35]
-            self._sectors_of_track[track] = sectors # use the same values for tracks 36..70 as for tracks 1..35
-            self._blocks_before_track[track] = lba
-            lba += sectors
-
     def bam_check(self):
         super().bam_check() # let 1541 class check the first side...
         # ...and now check second side:
-        debug(1, "Checking 1571 BAM (second side)")
-        self._check_totals(36, 35, (221, 1), (18, 0), 3, (0, 3), (53, 0))
+        _debug(1, "Checking 1571 BAM (second side)")
+        # BAM for second side is split into two parts (totals at 18,0 and bitmaps at 53,0),
+        # so we cannot use the std function:
+        total_block = self.read_ts((18, 0))
+        bits_block = self.read_ts((53, 0))
+        for entry in range(35):
+            track = entry + 36
+            total = total_block[221 + entry]
+            sum = 0
+            for i in range(3):
+                sum += _popcount(bits_block[entry * 3 + i])
+            if total == sum:
+                _debug(9, "track %d: %d free blocks" % (track, sum))
+            else:
+                print("BAM error for track %d: counter says %d, bitfield says %d!" % (track, total, sum), file=sys.stderr)
 
     def read_free_blocks(self):
         d = super().read_free_blocks()  # let 1541 class do the first side...
         # and now add second side:
-        self._fill_free_blocks_dict(d, 36, 35, (221, 1), (18, 0))
+        self._fill_free_blocks_dict(d, (18, 0), 221, 1, 35, 36)
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
 
     def release_blocks(self, set_of_ts):
-        bamblock180 = self.read_ts(18, 0)
-        bamblock530 = self.read_ts(53, 0)
+        bamblock180 = self.read_ts((18, 0))
+        bamblock530 = self.read_ts((53, 0))
         dirty180 = False
         dirty530 = False
         for track, sector in set_of_ts:
@@ -640,9 +629,9 @@ class _d71(_d41):
                 dirty180 = True
                 dirty530 = True
         if dirty180:
-            self.write_ts(18, 0, bamblock180)
+            self.write_ts((18, 0), bamblock180)
         if dirty530:
-            self.write_ts(53, 0, bamblock530)
+            self.write_ts((53, 0), bamblock530)
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 35:
@@ -654,7 +643,7 @@ class _d71(_d41):
 ################################################################################
 # experimental 8050 class
 
-class _d80(_d41):
+class _d80(d64):
     name = "8050"
     blocks_total = 2083 # 2052 free?
     maxtrack = 77
@@ -667,37 +656,23 @@ class _d80(_d41):
     track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23}
 
     def __init__(self):
-        # build lookup tables for "sectors per track" and "blocks before track"
-        self._sectors_of_track = {}
-        self._blocks_before_track = {}
-        lba = 0
-        for track in range(1, self.maxtrack + 1):
-            if track <= 39:
-                sectors = 29
-            elif track <= 53:
-                sectors = 27
-            elif track <= 64:
-                sectors = 25
-            else:
-                sectors = 23
-            self._sectors_of_track[track] = sectors
-            self._blocks_before_track[track] = lba
-            lba += sectors
+        # this inhibits the base class's exception...
+        pass    # ...but there is nothing to do!
 
     def bam_check(self):
-        debug(1, "Checking 8050 BAM")
-        self._check_totals(1, 50, (6, 5), (38, 0), 4, (7, 5))
-        self._check_totals(51, 27, (6, 5), (38, 3), 4, (7, 5))
+        _debug(1, "Checking 8050 BAM")
+        self._check_totals((38, 0), 6, 5, 50,  1)
+        self._check_totals((38, 3), 6, 5, 27, 51)
 
     def read_free_blocks(self):
         d = dict()
-        self._fill_free_blocks_dict(d, 1, 50, (6, 5), (38, 0))
-        self._fill_free_blocks_dict(d, 51, 27, (6, 5), (38, 3))
+        self._fill_free_blocks_dict(d, (38, 0), 6, 5, 50,  1)
+        self._fill_free_blocks_dict(d, (38, 3), 6, 5, 27, 51)
         return d
 
     def release_blocks(self, set_of_ts):
-        bamblock380 = self.read_ts(38, 0)
-        bamblock383 = self.read_ts(38, 3)
+        bamblock380 = self.read_ts((38, 0))
+        bamblock383 = self.read_ts((38, 3))
         dirty380 = False
         dirty383 = False
         for track, sector in set_of_ts:
@@ -708,9 +683,9 @@ class _d80(_d41):
                 self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
                 dirty383 = True
         if dirty380:
-            self.write_ts(38, 0, bamblock380)
+            self.write_ts((38, 0), bamblock380)
         if dirty383:
-            self.write_ts(38, 3, bamblock383)
+            self.write_ts((38, 3), bamblock383)
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 50:
@@ -722,42 +697,36 @@ class _d80(_d41):
 ################################################################################
 # experimental 8250 / SFD-1001 class
 
-class _d82(_d80):
+class _d82(d64):
     name = "8250"
     blocks_total = 4166 # 4133 free
     maxtrack = 154
     track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
 
     def __init__(self):
-        super().__init__()  # let 8050 class build the lookup tables...
-        # ...and now fix them for tracks 78..154:
-        lba = self._blocks_before_track[78] # lba of "second half"
-        for track in range(78, self.maxtrack + 1):
-            sectors = self._sectors_of_track[track - 77]
-            self._sectors_of_track[track] = sectors # use the same values for tracks 78..154 as for tracks 1..77
-            self._blocks_before_track[track] = lba
-            lba += sectors
+        # this inhibits the base class's exception...
+        pass    # ...but there is nothing to do!
 
     def bam_check(self):
-        debug(1, "Checking 8250 BAM")
-        self._check_totals(1, 50, (6, 5), (38, 0), 4, (7, 5))
-        self._check_totals(51, 50, (6, 5), (38, 3), 4, (7, 5))
-        self._check_totals(101, 50, (6, 5), (38, 6), 4, (7, 5))
-        self._check_totals(151, 4, (6, 5), (38, 9), 4, (7, 5))
+        _debug(1, "Checking 8250 BAM")
+        self._check_totals((38, 0), 6, 5, 50,   1)
+        self._check_totals((38, 3), 6, 5, 50,  51)
+        self._check_totals((38, 6), 6, 5, 50, 101)
+        self._check_totals((38, 9), 6, 5,  4, 151)
 
     def read_free_blocks(self):
         d = dict()
-        self._fill_free_blocks_dict(d, 1, 50, (6, 5), (38, 0))
-        self._fill_free_blocks_dict(d, 51, 50, (6, 5), (38, 3))
-        self._fill_free_blocks_dict(d, 101, 50, (6, 5), (38, 6))
-        self._fill_free_blocks_dict(d, 151, 4, (6, 5), (38, 9))
+        self._fill_free_blocks_dict(d, (38, 0), 6, 5, 50,   1)
+        self._fill_free_blocks_dict(d, (38, 3), 6, 5, 50,  51)
+        self._fill_free_blocks_dict(d, (38, 6), 6, 5, 50, 101)
+        self._fill_free_blocks_dict(d, (38, 9), 6, 5,  4, 151)
         return d
 
     def release_blocks(self, set_of_ts):
-        bamblock380 = self.read_ts(38, 0)
-        bamblock383 = self.read_ts(38, 3)
-        bamblock386 = self.read_ts(38, 6)
-        bamblock389 = self.read_ts(38, 9)
+        bamblock380 = self.read_ts((38, 0))
+        bamblock383 = self.read_ts((38, 3))
+        bamblock386 = self.read_ts((38, 6))
+        bamblock389 = self.read_ts((38, 9))
         dirty380 = False
         dirty383 = False
         dirty386 = False
@@ -776,13 +745,13 @@ class _d82(_d80):
                 self._release_block((track, sector), track - 151, (6, 5), bamblock389, (7, 5))
                 dirty389 = True
         if dirty380:
-            self.write_ts(38, 0, bamblock380)
+            self.write_ts((38, 0), bamblock380)
         if dirty383:
-            self.write_ts(38, 3, bamblock383)
+            self.write_ts((38, 3), bamblock383)
         if dirty386:
-            self.write_ts(38, 6, bamblock386)
+            self.write_ts((38, 6), bamblock386)
         if dirty389:
-            self.write_ts(38, 9, bamblock389)
+            self.write_ts((38, 9), bamblock389)
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 50:
@@ -804,6 +773,7 @@ for imgtype in (_d41, _d41_40, _d71, _d81, _d80, _d82):
     _type_of_size[imgtype.blocks_total * 256] = (imgtype, False)    # no error info
     _type_of_size[imgtype.blocks_total * 257] = (imgtype, True) # with error info
 _largest_size = max(_type_of_size.keys())
+#print(_type_of_size)
 del imgtype # we do not want this to pop up in the online help...
 
 def DiskImage(filename, writeback=False, writethrough=False):
@@ -828,14 +798,14 @@ def DiskImage(filename, writeback=False, writethrough=False):
         raise Exception("Could not process " + filename + ": Image type not recognised")
     img_type, error_info = _type_of_size[filesize]
     obj = img_type()
-    debug(1, filename, "is a", obj.name, "disk image" + (" with error info." if error_info else "."))
+    _debug(1, filename, "is a", obj.name, "disk image" + (" with error info." if error_info else "."))
     obj._populate(fh=fh, body=body, readonly=readonly, writeback=writeback, writethrough=writethrough)
     return obj
 
 ################################################################################
 # "main program"
 
-petscii_graphics = (
+_petscii_graphics = (
     "        (control  codes)        " +
     " !\"#$%&'()*+,-./0123456789:;<=>?" +
     "@ABCDEFGHIJKLMNOPQRSTUVWXYZ[£]↑←" +
@@ -844,7 +814,7 @@ petscii_graphics = (
     " ▌▄▔▁▏▒▕⣤◤▊┣▗┗┓▂┏┻┳┫▎▍▋▆▅▃ᒧ▖▝┛▘▚" +
     "━♠┃━⎻⎺⎼⎢⎥╮╰╯ᒪ╲╱ᒥᒣ●⎽♥▏╭╳○♣▕♦╋⡇┃π◥" +
     " ▌▄▔▁▏▒▕⣤◤▊┣▗┗┓▂┏┻┳┫▎▍▋▆▅▃ᒧ▖▝┛▘π")     # copy of a0..be, for output only
-petscii_lowercase = (
+_petscii_lowercase = (
     "        (control  codes)        " +
     " !\"#$%&'()*+,-./0123456789:;<=>?" +
     "@abcdefghijklmnopqrstuvwxyz[£]↑←" +
@@ -857,7 +827,7 @@ petscii_lowercase = (
 
 def from_petscii(bindata, second_charset):
     """Helper fn to convert petscii bytes to something printable."""
-    charset = petscii_lowercase if second_charset else petscii_graphics
+    charset = _petscii_lowercase if second_charset else _petscii_graphics
     ret = ""
     for b in bindata:
         # first check if we need to display in reverse
@@ -894,7 +864,7 @@ def filetypes(filetype):
         return b"DIR"   # introduced by CMD
     return b"0X%X" % filetype
 
-def quote(name16):
+def _quote(name16):
     """
     Helper function to add opening and closing quotes at correct positions.
     """
@@ -907,7 +877,7 @@ def show_directory(img, second_charset, full=False):
     Show directory of image file.
     """
     name, id5 = img.read_header_fields()
-    qname = quote(name)
+    qname = _quote(name)
     qname = from_petscii(qname, second_charset)
     id5 = from_petscii(id5, second_charset)
     print('header:', qname, id5)
@@ -924,7 +894,7 @@ def show_directory(img, second_charset, full=False):
             if full == False:
                 continue
         ts = bin30[1:3]
-        qname = quote(bin30[3:19])
+        qname = _quote(bin30[3:19])
         misc = bin30[19:28]
         blocks = bin30[28:30]
         line = '%3d: %5d ' % (index, int.from_bytes(blocks, "little"))
@@ -942,7 +912,7 @@ def show_directory(img, second_charset, full=False):
     print(freeblocks["shown"], "blocks free (+%d in dir track)" % freeblocks["dir"])
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
 
-def process_file(file, second_charset, full=False):
+def _process_file(file, second_charset, full=False):
     try:
         img = DiskImage(file)
     except OSError as e:
@@ -954,7 +924,7 @@ def process_file(file, second_charset, full=False):
     img.bam_check()
     show_directory(img, second_charset, full=full)
 
-def main():
+def _main():
     global _debuglevel
     if len(sys.argv) == 1:
         sys.argv.append("-h")   # if run without arguments, show help instead of complaining!
@@ -971,7 +941,7 @@ If run directly, the directory of the given file(s) is displayed.
     args = parser.parse_args()
     _debuglevel += args.debug
     for file in args.files:
-        process_file(file, args.charset, full=args.full)
+        _process_file(file, args.charset, full=args.full)
 
 if __name__ == "__main__":
-    main()
+    _main()
