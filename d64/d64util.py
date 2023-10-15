@@ -379,20 +379,24 @@ class d64(object):
         (index, raw entry (30 bytes), tuple might grow in future...)
         Setting include_invisible to True yields even the empty entries.
         """
-        track, sector = self.directory_ts
+        ts = self.directory_ts
         all_used_ts = set() # for sanity check
         entry_number = 0    # index, so caller can unambiguously reference each entry
-        while track:
+        while ts[0]:
             # sanity check
-            if (track, sector) in all_used_ts:
+            if ts in all_used_ts:
                 raise Exception("Directory loops back to itself, please check disk image!")
-            all_used_ts.add((track, sector))
+            all_used_ts.add(ts)
+            try:
+                self._check_ts(ts)
+            except Exception as e:
+                print("WARNING, stopped reading dir:", e)
+                return
             # read a directory sector
-            block = self.read_ts((track, sector))
-            track = block[0]
-            sector = block[1]
-            if track == 0:
-                _debug(2, "Last! Link is t%d s%d." % (track, sector))
+            block = self.read_ts(ts)
+            ts = (block[0], block[1])
+            if ts[0] == 0:
+                _debug(2, "Last! Link is t%d s%d." % ts)
             readidx = 2
             for i in range(8):
                 bin30 = block[readidx:readidx+30]
@@ -401,8 +405,8 @@ class d64(object):
                     yield entry_number, bin30   # CAUTION, maybe more fields will get added in future!
                 entry_number += 1
         # "track" is zero, so there is no next block
-        if sector != 255:
-            print("WARNING: sector value of final dir block is %d instead of 255!" % sector, file=sys.stderr)
+        if ts[1] != 255:
+            print("WARNING: sector value of final dir block is %d instead of 255!" % ts[1], file=sys.stderr)
 
     def write_directory(self, new_dir): # TODO: add flag for "accept oversized dirs and use other tracks"
         """
