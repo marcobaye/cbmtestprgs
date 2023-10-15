@@ -508,61 +508,11 @@ class d64(object):
             track, sector = block[0:2]
         self.release_blocks(all_used_ts)
 
-# TODO: re-order classes!
-
 ################################################################################
-# 1581 class
-
-class _1581(d64):
-    name = "1581"
-    blocks_total = 3200 # 3160 free
-    maxtrack = 80
-    track_length_changes = {1: 40}  # all tracks have 40 sectors
-    header_ts_and_offset = (40, 0), 4   # where to find diskname and five-byte "pseudo id"
-    bam_blocks = [(40, 1), (40, 2)]
-    bam_start_size_maxperblock = (16, 6, 40)
-    directory_ts = (40, 3)
-    std_max_dir_entries = 296   # for writing directory
-    std_directory_interleave = 1    # 1581 uses interleave 1 because of track cache
-    std_file_interleave = 1 # 1581 uses interleave 1 because of track cache
-    # HACK for img partition on test/demo disk:
-    #header_ts_and_offset = (50, 0), 4
-    #bam_blocks = [(50, 1), (50, 2)]
-    #directory_ts = (50, 3)
-
-    def __init__(self):
-        # this inhibits the base class's exception...
-        pass    # ...but there is nothing to do!
-
-    def release_blocks(self, set_of_ts):
-        bamblock1 = self.read_ts((40, 1))
-        bamblock2 = self.read_ts((40, 2))
-        dirty1 = False
-        dirty2 = False
-        for track, sector in set_of_ts:
-            if track <= 40:
-                self._release_block((track, sector), track - 1, (16, 6), bamblock1, (17, 6))
-                dirty1 = True
-            else:
-                self._release_block((track, sector), track - 41, (16, 6), bamblock2, (17, 6))
-                dirty2 = True
-        if dirty1:
-            self.write_ts((40, 1), bamblock1)
-        if dirty2:
-            self.write_ts((40, 2), bamblock2)
-
-    def try_to_allocate(self, track, sector, exact):
-        if track <= 40:
-            ts = self._try_to_allocate((track, sector), track - 1, (16, 6), (40, 1), (17, 6), exact=exact)
-        else:
-            ts = self._try_to_allocate((track, sector), track - 41, (16, 6), (40, 2), (17, 6), exact=exact)
-        return ts
-
-################################################################################
-# 2040 class (DOS 1.0)
+# CBM DOS 1 disk format, as used by 2040/3040 drives
 
 class _dos1(d64):
-    name = "2040 (DOS 1.0)"
+    name = "2040/3040 (DOS 1.0)"
     blocks_total = 690  # 670 free
     maxtrack = 35
     track_length_changes = {1: 21, 18: 20, 25: 18, 31: 17}
@@ -575,7 +525,7 @@ class _dos1(d64):
     #std_file_interleave =
 
 ################################################################################
-# 1541 class (same format as 2031, 4031, 4040, 1540, 1551)
+# CBM DOS 2 disk format, as used by 4040, 2031, 4031, 1540, 1541, 1551, 1570 drives
 # file extension is mostly d64, sometimes d41
 
 class _1541(d64):
@@ -608,7 +558,109 @@ class _1541(d64):
         return self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)
 
 ################################################################################
-# 40-track-1541 class
+# disk format of 8050 drives
+# file extension is d80?
+
+class _8050(d64):
+    name = "8050"
+    blocks_total = 2083 # 2052 free
+    maxtrack = 77
+    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23}
+    header_ts_and_offset = (39, 0), 6   # where to find diskname and five-byte "pseudo id"
+    bam_blocks = [(38, 0), (38, 3)] # one source says sector 1 instead of 3!
+    bam_start_size_maxperblock = (6, 5, 50)
+    directory_ts = (39, 1)
+    std_max_dir_entries = 224   # for writing directory
+    #std_directory_interleave = 3   ?
+    #std_file_interleave = 10       ?
+
+    def __init__(self):
+        # this inhibits the base class's exception...
+        pass    # ...but there is nothing to do!
+
+    def release_blocks(self, set_of_ts):
+        bamblock380 = self.read_ts((38, 0))
+        bamblock383 = self.read_ts((38, 3))
+        dirty380 = False
+        dirty383 = False
+        for track, sector in set_of_ts:
+            if track <= 50:
+                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
+                dirty380 = True
+            else:
+                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
+                dirty383 = True
+        if dirty380:
+            self.write_ts((38, 0), bamblock380)
+        if dirty383:
+            self.write_ts((38, 3), bamblock383)
+
+    def try_to_allocate(self, track, sector, exact):
+        if track <= 50:
+            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
+        else:
+            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
+        return ts
+
+################################################################################
+# disk format of 8250 / SFD-1001 drives
+# file extension is d82?
+
+class _8250(_8050):
+    name = "8250"
+    blocks_total = 4166 # 4133 free
+    maxtrack = 154
+    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
+    bam_blocks = [(38, 0), (38, 3), (38, 6), (38, 9)]
+
+    def __init__(self):
+        # this inhibits the base class's exception...
+        pass    # ...but there is nothing to do!
+
+    def release_blocks(self, set_of_ts):
+        bamblock380 = self.read_ts((38, 0))
+        bamblock383 = self.read_ts((38, 3))
+        bamblock386 = self.read_ts((38, 6))
+        bamblock389 = self.read_ts((38, 9))
+        dirty380 = False
+        dirty383 = False
+        dirty386 = False
+        dirty389 = False
+        for track, sector in set_of_ts:
+            if track <= 50:
+                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
+                dirty380 = True
+            elif track <= 100:
+                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
+                dirty383 = True
+            elif track <= 150:
+                self._release_block((track, sector), track - 101, (6, 5), bamblock386, (7, 5))
+                dirty386 = True
+            else:
+                self._release_block((track, sector), track - 151, (6, 5), bamblock389, (7, 5))
+                dirty389 = True
+        if dirty380:
+            self.write_ts((38, 0), bamblock380)
+        if dirty383:
+            self.write_ts((38, 3), bamblock383)
+        if dirty386:
+            self.write_ts((38, 6), bamblock386)
+        if dirty389:
+            self.write_ts((38, 9), bamblock389)
+
+    def try_to_allocate(self, track, sector, exact):
+        if track <= 50:
+            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
+        elif track <= 100:
+            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
+        elif track <= 150:
+            ts = self._try_to_allocate((track, sector), track - 101, (6, 5), (38, 6), (7, 5), exact=exact)
+        else:
+            ts = self._try_to_allocate((track, sector), track - 151, (6, 5), (38, 9), (7, 5), exact=exact)
+        return ts
+
+################################################################################
+# disk format of 1541-with-40-tracks-support
 # file extension is mostly d64, sometimes d41
 
 class _40track(_1541):
@@ -641,7 +693,7 @@ class _40track(_1541):
         raise Exception("Allocation of tracks 36..40 is not yet supported!")
 
 ################################################################################
-# 1571 class
+# disk format of 1571 drives
 # file extension is d64 or d71
 
 class _1571(_1541):
@@ -703,105 +755,51 @@ class _1571(_1541):
         return ts
 
 ################################################################################
-# experimental 8050 class
-# file extension is d80?
+# disk format of 1581 drives
 
-class _8050(d64):
-    name = "8050"
-    blocks_total = 2083 # 2052 free
-    maxtrack = 77
-    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23}
-    header_ts_and_offset = (39, 0), 6   # where to find diskname and five-byte "pseudo id"
-    bam_blocks = [(38, 0), (38, 3)] # one source says sector 1 instead of 3!
-    bam_start_size_maxperblock = (6, 5, 50)
-    directory_ts = (39, 1)
-    std_max_dir_entries = 224   # for writing directory
-    #std_directory_interleave = 3   ?
-    #std_file_interleave = 10       ?
-
-    def __init__(self):
-        # this inhibits the base class's exception...
-        pass    # ...but there is nothing to do!
-
-    def release_blocks(self, set_of_ts):
-        bamblock380 = self.read_ts((38, 0))
-        bamblock383 = self.read_ts((38, 3))
-        dirty380 = False
-        dirty383 = False
-        for track, sector in set_of_ts:
-            if track <= 50:
-                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
-                dirty380 = True
-            else:
-                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
-                dirty383 = True
-        if dirty380:
-            self.write_ts((38, 0), bamblock380)
-        if dirty383:
-            self.write_ts((38, 3), bamblock383)
-
-    def try_to_allocate(self, track, sector, exact):
-        if track <= 50:
-            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
-        else:
-            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
-        return ts
-
-################################################################################
-# experimental 8250 / SFD-1001 class
-# file extension is d82?
-
-class _8250(_8050):
-    name = "8250"
-    blocks_total = 4166 # 4133 free
-    maxtrack = 154
-    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
-    bam_blocks = [(38, 0), (38, 3), (38, 6), (38, 9)]
+class _1581(d64):
+    name = "1581"
+    blocks_total = 3200 # 3160 free
+    maxtrack = 80
+    track_length_changes = {1: 40}  # all tracks have 40 sectors
+    header_ts_and_offset = (40, 0), 4   # where to find diskname and five-byte "pseudo id"
+    bam_blocks = [(40, 1), (40, 2)]
+    bam_start_size_maxperblock = (16, 6, 40)
+    directory_ts = (40, 3)
+    std_max_dir_entries = 296   # for writing directory
+    std_directory_interleave = 1    # 1581 uses interleave 1 because of track cache
+    std_file_interleave = 1 # 1581 uses interleave 1 because of track cache
+    # HACK for img partition on test/demo disk:
+    #header_ts_and_offset = (50, 0), 4
+    #bam_blocks = [(50, 1), (50, 2)]
+    #directory_ts = (50, 3)
 
     def __init__(self):
         # this inhibits the base class's exception...
         pass    # ...but there is nothing to do!
 
     def release_blocks(self, set_of_ts):
-        bamblock380 = self.read_ts((38, 0))
-        bamblock383 = self.read_ts((38, 3))
-        bamblock386 = self.read_ts((38, 6))
-        bamblock389 = self.read_ts((38, 9))
-        dirty380 = False
-        dirty383 = False
-        dirty386 = False
-        dirty389 = False
+        bamblock1 = self.read_ts((40, 1))
+        bamblock2 = self.read_ts((40, 2))
+        dirty1 = False
+        dirty2 = False
         for track, sector in set_of_ts:
-            if track <= 50:
-                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
-                dirty380 = True
-            elif track <= 100:
-                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
-                dirty383 = True
-            elif track <= 150:
-                self._release_block((track, sector), track - 101, (6, 5), bamblock386, (7, 5))
-                dirty386 = True
+            if track <= 40:
+                self._release_block((track, sector), track - 1, (16, 6), bamblock1, (17, 6))
+                dirty1 = True
             else:
-                self._release_block((track, sector), track - 151, (6, 5), bamblock389, (7, 5))
-                dirty389 = True
-        if dirty380:
-            self.write_ts((38, 0), bamblock380)
-        if dirty383:
-            self.write_ts((38, 3), bamblock383)
-        if dirty386:
-            self.write_ts((38, 6), bamblock386)
-        if dirty389:
-            self.write_ts((38, 9), bamblock389)
+                self._release_block((track, sector), track - 41, (16, 6), bamblock2, (17, 6))
+                dirty2 = True
+        if dirty1:
+            self.write_ts((40, 1), bamblock1)
+        if dirty2:
+            self.write_ts((40, 2), bamblock2)
 
     def try_to_allocate(self, track, sector, exact):
-        if track <= 50:
-            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
-        elif track <= 100:
-            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
-        elif track <= 150:
-            ts = self._try_to_allocate((track, sector), track - 101, (6, 5), (38, 6), (7, 5), exact=exact)
+        if track <= 40:
+            ts = self._try_to_allocate((track, sector), track - 1, (16, 6), (40, 1), (17, 6), exact=exact)
         else:
-            ts = self._try_to_allocate((track, sector), track - 151, (6, 5), (38, 9), (7, 5), exact=exact)
+            ts = self._try_to_allocate((track, sector), track - 41, (16, 6), (40, 2), (17, 6), exact=exact)
         return ts
 
 ################################################################################
