@@ -6,6 +6,8 @@ import argparse
 import sys  # for sys.stderr and sys.exit
 
 # this library accepts disk images with error info, but atm does not honor it!
+# TODO: honor error info
+# TODO: allow "ts tuple" and "lba number" to be used interchangeably
 
 _debuglevel = 1
 
@@ -29,31 +31,32 @@ def _bam_offset_and_bit(sector):
     # bitmap bytes are little-endian, lsb first:
     return sector >> 3, 1 << (sector & 7)
 
-# TODO: use a ts tuple instead of track/sector, so ts and lba can be used interchangeably
-
 ################################################################################
 # virtual base class
 
 class d64(object):
     """
-    This class describes a cbm disc image. There are subclasses for 1541/40track/1571/1581.
+    This class describes a cbm disc image. There are subclasses for 1541,
+        40track, 1571, 1581, ...
 
     Constants:
-        name: the name of the format, e.g. "1581"
+        name: the name of the format, for example "1581"
         blocks_total: the number of 256-byte blocks per image file
         maxtrack: highest track number (lowest is always 1)
-        header_ts: track and sector of header block
-        header_name_offset: byte offset of disc name in header block
+        track_length_changes: dict with "new" sectors-per-track value
+        header_ts_and_offset: where to find disc name and five-byte
+            "pseudo id"
+        bam_blocks: list of ts values where block availability map is held
+        bam_start_size_maxperblock: start offset in bam blocks, size of
+            entries, max number of entries per block
         directory_ts: track and sector of first directory block
         std_max_dir_entries: maximum number of directory entries
         std_directory_interleave: block interleave for directory
         std_file_interleave: block interleave for files
-        track_length_changes: dict with "new" sectors-per-track value
     """
-    # TODO - merge header_ts and header_name_offset?
 
     def __init__(self):
-        raise Exception("Only subclasses (d41, d71, d81) can be instantiated!")
+        raise Exception("Only subclasses (1541, 1571, 1581, ...) can be instantiated!")
 
     def _populate(self, fh, body, readonly, writeback, writethrough):
         """
@@ -69,12 +72,15 @@ class d64(object):
         self._sectors_of_track = {}
         self._blocks_before_track = {}
         lba = 0
-        sectors = None  # sanity check, triggers exception if length of t1 is not specified
+        sectors = None  # trigger exception if track_length_changes has no "1" key!
         for track in range(1, self.maxtrack + 1):
             sectors = self.track_length_changes.get(track, sectors) # get new length or keep old one
             self._sectors_of_track[track] = sectors
             self._blocks_before_track[track] = lba
             lba += sectors
+        # sanity check:
+        if self.blocks_total != lba:
+            sys.exit("BUG: total number of blocks is inconsistent!")
 
     def _check_track_num(self, track):
         """_check_track_num(int)
@@ -99,14 +105,11 @@ class d64(object):
         if sector >= self.sectors_of_track(track):
             raise Exception("Exceeded maximum sector number of track %d." % track)
 
-    def _virtualfn(self):
-        raise Exception("BUG: A virtual function was called.")
-
     def sectors_of_track(self, track):
         """sectors_of_track(int) -> int
 
-        Return number of sectors in given track.
-        Sector numbers start at 0, so the maximum sector number is one less than this.
+        Return number of sectors in given track. Sector numbers start
+        at 0, so the maximum sector number is one less than this.
         """
         self._check_track_num(track)
         return self._sectors_of_track[track]
@@ -114,7 +117,8 @@ class d64(object):
     def ts_to_lba(self, ts):
         """ts_to_lba((int, int)) -> int
 
-        Convert track and sector to logical block address (0-based block number).
+        Convert track and sector to logical block address
+        (0-based block number).
         """
         self._check_ts(ts)
         track, sector = ts
@@ -122,7 +126,8 @@ class d64(object):
 
     def read_ts(self, ts):
         """
-        Read block indicated via track/sector tuple and return as bytes or bytearray.
+        Read block indicated via track/sector tuple and return as bytes or
+        bytearray.
         """
         _debug(2, "Reading t%d s%d." % ts)
         self._check_ts(ts)
@@ -215,28 +220,58 @@ class d64(object):
             else:
                 d["shown"] += freeblocks
 
-    def bam_check(self):
+    def bam_check(self, alt_maxtrack=None):
         """
         Check BAM for internal consistency: Do counters match bit fields?
         This does not check allocation of files!
         """
-        self._virtualfn()
+        _debug(1, "Checking " + self.name + " BAM for internal consistency")
+        startoffset, size, maxtracks = self.bam_start_size_maxperblock
+        starttrack = 1
+        # if alternative maxtrack given, use it (used by 40track and 1571,
+        # because only the 1541-compatible part of the bam uses the "standard"
+        # layout)
+        tracks_left = alt_maxtrack if alt_maxtrack else self.maxtrack
+        for bamblock_ts in self.bam_blocks:
+            self._check_totals(bamblock_ts, startoffset, size, maxtracks, starttrack)
+            starttrack += maxtracks
+            tracks_left -= maxtracks
+            maxtracks = min(maxtracks, tracks_left)
+        # sanity check:
+        if tracks_left:
+            sys.exit("BUG: inconsistent number of tracks when checking BAM!")
 
     def read_header_fields(self):
         """
         Return disk name and five-byte "pseudo id".
         """
-        track, sector = self.header_ts
-        of = self.header_name_offset
-        block = self.read_ts((track, sector))
+        ts, of = self.header_ts_and_offset
+        block = self.read_ts(ts)
         return block[of:of+16], block[of+18:of+23]
 
-    def read_free_blocks(self):
+    def read_free_blocks(self, alt_maxtrack=None):
         """
-        Return dictionary of free blocks per track. There are three additional keys,
-        "shown", "dir" and "all", where "shown" + "dir" == "all"
+        Return dictionary of free blocks per track.
+        There are three additional keys, "shown", "dir" and "all", where
+        "shown" + "dir" == "all"
         """
-        self._virtualfn()
+        _debug(3, "Reading free blocks counters")
+        startoffset, size, maxtracks = self.bam_start_size_maxperblock
+        starttrack = 1
+        # if alternative maxtrack given, use it (used by 40track and 1571,
+        # because only the 1541-compatible part of the bam uses the "standard"
+        # layout)
+        tracks_left = alt_maxtrack if alt_maxtrack else self.maxtrack
+        d = dict()
+        for bamblock_ts in self.bam_blocks:
+            self._fill_free_blocks_dict(d, bamblock_ts, startoffset, size, maxtracks, starttrack)
+            starttrack += maxtracks
+            tracks_left -= maxtracks
+            maxtracks = min(maxtracks, tracks_left)
+        # sanity check:
+        if tracks_left:
+            sys.exit("BUG: inconsistent number of tracks when reading free blocks!")
+        return d
 
     # TODO - simplify for non-1571 and give 1571 its own version
     def _release_block(self, ts, entry, totals_offset_step, totals_block, bitmaps_offset_step, bitmaps_block=None):
@@ -328,6 +363,9 @@ class d64(object):
                 break   # fail (no sectors left on this track)
         # if we arrive here, the request could not be satisfied
         return None # failure
+
+    def _virtualfn(self):
+        raise Exception("BUG: A virtual function was called!")
 
     def release_blocks(self, set_of_ts):
         """
@@ -424,7 +462,7 @@ class d64(object):
         """
         # pad name with shift-space:
         name = namebytes + b"\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0"
-        entry = b"\x80" + bytes(self.header_ts) + name[:16] + bytes(11)
+        entry = b"\x80" + bytes(self.header_ts_and_offset[0]) + name[:16] + bytes(11)
         # 0x80 is for a visible DEL entry,
         # tt/ss point to header block (so VALIDATE does not complain?),
         # name is 16 bytes of filename, padded with shift-space,
@@ -470,35 +508,31 @@ class d64(object):
             track, sector = block[0:2]
         self.release_blocks(all_used_ts)
 
+# TODO: re-order classes!
+
 ################################################################################
 # 1581 class
 
-class _d81(d64):
+class _1581(d64):
     name = "1581"
-    blocks_total = 3200
+    blocks_total = 3200 # 3160 free
     maxtrack = 80
-    header_ts = (40, 0)
-    header_name_offset = 4  # diskname and five-byte "pseudo id"
+    track_length_changes = {1: 40}  # all tracks have 40 sectors
+    header_ts_and_offset = (40, 0), 4   # where to find diskname and five-byte "pseudo id"
+    bam_blocks = [(40, 1), (40, 2)]
+    bam_start_size_maxperblock = (16, 6, 40)
     directory_ts = (40, 3)
     std_max_dir_entries = 296   # for writing directory
     std_directory_interleave = 1    # 1581 uses interleave 1 because of track cache
     std_file_interleave = 1 # 1581 uses interleave 1 because of track cache
-    track_length_changes = {1: 40}  # all tracks have 40 sectors
+    # HACK for img partition on test/demo disk:
+    #header_ts_and_offset = (50, 0), 4
+    #bam_blocks = [(50, 1), (50, 2)]
+    #directory_ts = (50, 3)
 
     def __init__(self):
         # this inhibits the base class's exception...
         pass    # ...but there is nothing to do!
-
-    def bam_check(self):
-        _debug(1, "Checking 1581 BAM")
-        self._check_totals((40, 1), 16, 6, 40, 1)   # FIXME - put numbers in class vars like "BAM1/BAM2" lists?
-        self._check_totals((40, 2), 16, 6, 40, 41)
-
-    def read_free_blocks(self):
-        d = dict()
-        self._fill_free_blocks_dict(d, (40, 1), 16, 6, 40, 1)
-        self._fill_free_blocks_dict(d, (40, 2), 16, 6, 40, 41)
-        return d
 
     def release_blocks(self, set_of_ts):
         bamblock1 = self.read_ts((40, 1))
@@ -525,32 +559,41 @@ class _d81(d64):
         return ts
 
 ################################################################################
-# 1541 class
+# 2040 class (DOS 1.0)
 
-class _d41(d64):
+class _dos1(d64):
+    name = "2040 (DOS 1.0)"
+    blocks_total = 690  # 670 free
+    maxtrack = 35
+    track_length_changes = {1: 21, 18: 20, 25: 18, 31: 17}
+    header_ts_and_offset = (18, 0), 144 # where to find diskname (dos 1 had no pseudo id?)
+    bam_blocks = [(18, 0)]
+    bam_start_size_maxperblock = (4, 4, 35)
+    directory_ts = (18, 1)
+    std_max_dir_entries = 152   # for writing directory
+    #std_directory_interleave =
+    #std_file_interleave =
+
+################################################################################
+# 1541 class (same format as 2031, 4031, 4040, 1540, 1551)
+# file extension is mostly d64, sometimes d41
+
+class _1541(d64):
     name = "1541"
     blocks_total = 683
     maxtrack = 35
-    header_ts = (18, 0)
-    header_name_offset = 144    # diskname and five-byte "pseudo id"
+    track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17}
+    header_ts_and_offset = (18, 0), 144 # where to find diskname and five-byte "pseudo id"
+    bam_blocks = [(18, 0)]
+    bam_start_size_maxperblock = (4, 4, 35)
     directory_ts = (18, 1)
     std_max_dir_entries = 144   # for writing directory
     std_directory_interleave = 3
     std_file_interleave = 10
-    track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17}
 
     def __init__(self):
         # this inhibits the base class's exception...
         pass    # ...but there is nothing to do!
-
-    def bam_check(self):
-        _debug(1, "Checking 1541 BAM")
-        self._check_totals((18, 0), 4, 4, 35, 1)
-
-    def read_free_blocks(self):
-        d = dict()
-        self._fill_free_blocks_dict(d, (18, 0), 4, 4, 35, 1)
-        return d
 
     def release_blocks(self, set_of_ts):
         bamblock = self.read_ts((18, 0))
@@ -566,11 +609,29 @@ class _d41(d64):
 
 ################################################################################
 # 40-track-1541 class
+# file extension is mostly d64, sometimes d41
 
-class _d41_40(_d41):
+class _40track(_1541):
     name = "40-track 1541"
-    blocks_total = 683 + 5 * 17
+    blocks_total = 768  # 749 free
     maxtrack = 40
+
+    def bam_check(self):
+        super().bam_check(alt_maxtrack=35)  # let 1541 class check the first side...
+        # ...and now check extra tracks:
+        # TODO
+        # AFAIK there are two different ways to store the additional 5*4 bytes,
+        # either at the start or at the end of the "unused" part of t18s0.
+
+    def read_free_blocks(self):
+        d = super().read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
+        # ...and now add extra tracks:
+        # TODO
+        # AFAIK there are two different ways to store the additional 5*4 bytes,
+        # either at the start or at the end of the "unused" part of t18s0.
+        #self._fill_free_blocks_dict(d, (18, 0), FIXME, 4, 5, 36)
+        # TODO - find a way to include "would show XYZ in a 1541 drive" info!
+        return d
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 35:
@@ -581,18 +642,19 @@ class _d41_40(_d41):
 
 ################################################################################
 # 1571 class
+# file extension is d64 or d71
 
-class _d71(_d41):
+class _1571(_1541):
     name = "1571"
-    blocks_total = 2 * 683
+    blocks_total = 1366 # 1328 free
     maxtrack = 70
-    std_file_interleave = 6
     track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17, 35+1: 21, 35+18: 19, 35+25: 18, 35+31: 17}
+    std_file_interleave = 6
 
     def bam_check(self):
-        super().bam_check() # let 1541 class check the first side...
+        super().bam_check(alt_maxtrack=35)  # let 1541 class check the first side...
         # ...and now check second side:
-        _debug(1, "Checking 1571 BAM (second side)")
+        #_debug(1, "Checking 1571 BAM (second side)")
         # BAM for second side is split into two parts (totals at 18,0 and bitmaps at 53,0),
         # so we cannot use the std function:
         total_block = self.read_ts((18, 0))
@@ -609,8 +671,8 @@ class _d71(_d41):
                 print("BAM error for track %d: counter says %d, bitfield says %d!" % (track, total, sum), file=sys.stderr)
 
     def read_free_blocks(self):
-        d = super().read_free_blocks()  # let 1541 class do the first side...
-        # and now add second side:
+        d = super().read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
+        # ...and now add second side:
         self._fill_free_blocks_dict(d, (18, 0), 221, 1, 35, 36)
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
@@ -642,33 +704,24 @@ class _d71(_d41):
 
 ################################################################################
 # experimental 8050 class
+# file extension is d80?
 
-class _d80(d64):
+class _8050(d64):
     name = "8050"
-    blocks_total = 2083 # 2052 free?
+    blocks_total = 2083 # 2052 free
     maxtrack = 77
-    header_ts = (39, 0)
-    header_name_offset = 6  # diskname and five-byte "pseudo id"
+    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23}
+    header_ts_and_offset = (39, 0), 6   # where to find diskname and five-byte "pseudo id"
+    bam_blocks = [(38, 0), (38, 3)] # one source says sector 1 instead of 3!
+    bam_start_size_maxperblock = (6, 5, 50)
     directory_ts = (39, 1)
     std_max_dir_entries = 224   # for writing directory
     #std_directory_interleave = 3   ?
     #std_file_interleave = 10       ?
-    track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23}
 
     def __init__(self):
         # this inhibits the base class's exception...
         pass    # ...but there is nothing to do!
-
-    def bam_check(self):
-        _debug(1, "Checking 8050 BAM")
-        self._check_totals((38, 0), 6, 5, 50,  1)
-        self._check_totals((38, 3), 6, 5, 27, 51)
-
-    def read_free_blocks(self):
-        d = dict()
-        self._fill_free_blocks_dict(d, (38, 0), 6, 5, 50,  1)
-        self._fill_free_blocks_dict(d, (38, 3), 6, 5, 27, 51)
-        return d
 
     def release_blocks(self, set_of_ts):
         bamblock380 = self.read_ts((38, 0))
@@ -696,31 +749,18 @@ class _d80(d64):
 
 ################################################################################
 # experimental 8250 / SFD-1001 class
+# file extension is d82?
 
-class _d82(d64):
+class _8250(_8050):
     name = "8250"
     blocks_total = 4166 # 4133 free
     maxtrack = 154
     track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
+    bam_blocks = [(38, 0), (38, 3), (38, 6), (38, 9)]
 
     def __init__(self):
         # this inhibits the base class's exception...
         pass    # ...but there is nothing to do!
-
-    def bam_check(self):
-        _debug(1, "Checking 8250 BAM")
-        self._check_totals((38, 0), 6, 5, 50,   1)
-        self._check_totals((38, 3), 6, 5, 50,  51)
-        self._check_totals((38, 6), 6, 5, 50, 101)
-        self._check_totals((38, 9), 6, 5,  4, 151)
-
-    def read_free_blocks(self):
-        d = dict()
-        self._fill_free_blocks_dict(d, (38, 0), 6, 5, 50,   1)
-        self._fill_free_blocks_dict(d, (38, 3), 6, 5, 50,  51)
-        self._fill_free_blocks_dict(d, (38, 6), 6, 5, 50, 101)
-        self._fill_free_blocks_dict(d, (38, 9), 6, 5,  4, 151)
-        return d
 
     def release_blocks(self, set_of_ts):
         bamblock380 = self.read_ts((38, 0))
@@ -768,20 +808,25 @@ class _d82(d64):
 # wrapper stuff
 
 # collect supported sizes and largest of them so files can be identified
+_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250)
 _type_of_size = dict()
-for imgtype in (_d41, _d41_40, _d71, _d81, _d80, _d82):
+for imgtype in _supported:
     _type_of_size[imgtype.blocks_total * 256] = (imgtype, False)    # no error info
     _type_of_size[imgtype.blocks_total * 257] = (imgtype, True) # with error info
 _largest_size = max(_type_of_size.keys())
-#print(_type_of_size)
 del imgtype # we do not want this to pop up in the online help...
+
+def list_formats():
+    for type in _supported:
+        print(type.name)
 
 def DiskImage(filename, writeback=False, writethrough=False):
     """
     Identify disk image file and return as d64 object.
     'writeback' and 'writethrough' are mutually exclusive.
     If neither is true, data is read-only.
-    If 'writeback' mode is selected, you need to call writeback() to flush changes to file.
+    If 'writeback' mode is selected, you need to call writeback() to flush
+    changes to file.
     """
     if writeback and writethrough:
         raise Exception("writeback and writethrough are mutually exclusive")
@@ -931,17 +976,63 @@ def _main():
     parser = argparse.ArgumentParser(allow_abbrev = False, description =
 """
 This is a library for accessing d64 disk image files.
-It works with 1541, 1571 and 1581 images.
 If run directly, the directory of the given file(s) is displayed.
 """)
-    parser.add_argument("-c", "--charset", action="store_true", help="Use the other charset.")
-    parser.add_argument("-d", "--debug", action="count", default=0, help="Increase debugging output.")
-    parser.add_argument("-f", "--full", action="store_true", help="Show hidden data as well.")
+    parser.add_argument("-c", "--charset", action="store_true", help="use the other charset")
+    parser.add_argument("-d", "--debug", action="count", default=0, help="increase debugging output")
+    parser.add_argument("-f", "--full", action="store_true", help="show hidden data as well")
+    parser.add_argument("-l", "--list", action="store_true", help="list supported formats")
     parser.add_argument("files", metavar="IMAGEFILE.D64", nargs='+', help="Disk image file.")
     args = parser.parse_args()
     _debuglevel += args.debug
+    if args.list:
+        list_formats()
     for file in args.files:
         _process_file(file, args.charset, full=args.full)
 
 if __name__ == "__main__":
     _main()
+
+"""
+dos 1.0:
+    in 2040 and 3040 drives.
+    tracks 18..24 have 20 sectors -> out of spec?
+    690 blocks total, 670 free, 152 dir entries.
+    no REL files.
+dos 2.1:
+    in 4040 drives and in upgraded 2040 and 3040 drives
+    tracks 18..24 have 19 sectors
+    683 blocks total, 664 free, 144 dir entries.
+    new: REL files and @SAVE
+dos 2.5
+    in 8050 drives. disk changes are detected.
+    2083 blocks total, 2052 free, 224 dir entries.
+    REL files are still limited to 720 data blocks (180 kB).
+dos 2.6
+    in 2031/4031 drives (and later in 1540, 1541, 1551, ...).
+    basically dos 2.5, but
+        downgraded to a single drive and
+        using the same disk format as dos 2.1
+
+dos 2.7
+    in 8250 drives (double-sided)
+    new: super side sector, so REL files can use the whole disk.
+    docs claim sss holds 127 pointers (each a group of six side sectors),
+    and side sectors have $fe instead of own number.
+    (1581 and CMD docs say sss holds $fe byte plus 126 pointers)
+dos 3.0
+    in D9060 and D9090 hard disks
+
+dos 3.0 (based on 2.6?)
+    in 1570 and 1571 drives (but format on disk is still "2A")
+    no super side sectors, so REL files are limited to 720 data blocks.
+dos 3.1
+    in 128 DCR (but format on disk is still "2A")
+
+dos 10 (is this based on 2.7?)
+    in 1581 drives (but format on disk is "3D")
+    knows super side sector (-> 126 groups of six side sectors), so
+    REL file can use whole disk.
+    AFAIK the sss is optional and only gets created when needed (TODO: test this!)
+    (in dos 2.7, sss may be mandatory?).
+"""

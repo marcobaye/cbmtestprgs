@@ -58,7 +58,7 @@ def apply_dir_art(art, targetdisk, targetskip, use_all_art, add_spacer):
         while len(art):
             # create dummy entries for dir art
             art_entry = art.pop(0)
-            dir_entry = img.build_dummy_dir_entry(b"  " + art_entry[2:16])  # two spaces and last 14 chars of art
+            dir_entry = img.build_dummy_dir_entry(art_entry[:16])   # all 16 chars of art
             applied_art += 1
             newdir.append(dir_entry)
         print("Applied all %d entries of dir art." % applied_art)
@@ -94,7 +94,7 @@ Only two-char file names will be changed.
     parser.add_argument("artdisk", metavar="ARTDISK.D64", help="Disk image file to read directory art from.")
     parser.add_argument("targetdisk", metavar="TARGETDISK.D64", help="Disk image file to apply directory art to.")
     args = parser.parse_args()
-    d64util.debuglevel += args.debug
+    d64util._debuglevel += args.debug
 
     # step 1: read dir art from disk image
     dir_art = get_dir_art(args.artdisk)
