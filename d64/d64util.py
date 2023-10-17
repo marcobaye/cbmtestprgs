@@ -514,6 +514,7 @@ class d64(object):
 
 ################################################################################
 # CBM DOS 1 disk format, as used by 2040/3040 drives
+# file extension is .d67 (at least in VICE)
 
 class _dos1(d64):
     name = "2040/3040 (DOS 1.0)"
@@ -528,9 +529,13 @@ class _dos1(d64):
     #std_directory_interleave =
     #std_file_interleave =
 
+    def __init__(self):
+        # this inhibits the base class's exception...
+        pass    # ...but there is nothing to do!
+
 ################################################################################
 # CBM DOS 2 disk format, as used by 4040, 2031, 4031, 1540, 1541, 1551, 1570 drives
-# file extension is mostly d64, sometimes d41
+# file extension is mostly .d64, sometimes .d41
 
 class _1541(d64):
     name = "1541"
@@ -563,7 +568,7 @@ class _1541(d64):
 
 ################################################################################
 # disk format of 8050 drives
-# file extension is d80?
+# file extension is .d80
 
 class _8050(d64):
     name = "8050"
@@ -608,7 +613,7 @@ class _8050(d64):
 
 ################################################################################
 # disk format of 8250 / SFD-1001 drives
-# file extension is d82?
+# file extension is .d82
 
 class _8250(_8050):
     name = "8250"
@@ -665,7 +670,7 @@ class _8250(_8050):
 
 ################################################################################
 # disk format of 1541-with-40-tracks-support
-# file extension is mostly d64, sometimes d41
+# file extension is mostly .d64, sometimes .d41
 
 class _40track(_1541):
     name = "40-track 1541"
@@ -698,7 +703,7 @@ class _40track(_1541):
 
 ################################################################################
 # disk format of 1571 drives
-# file extension is d64 or d71
+# file extension is .d71 or .d64
 
 class _1571(_1541):
     name = "1571"
@@ -760,6 +765,7 @@ class _1571(_1541):
 
 ################################################################################
 # disk format of 1581 drives
+# file extension is .d81 or .d64
 
 class _1581(d64):
     name = "1581"
@@ -924,7 +930,7 @@ def show_directory(img, second_charset, full=False):
     Show directory of image file.
     """
     name, id5 = img.read_header_fields()
-    qname = _quote(name)
+    qname = _quote(name)    # FIXME - disk name uses a different quoting rule, end quote is *after* 16 chars!
     qname = from_petscii(qname, second_charset)
     id5 = from_petscii(id5, second_charset)
     print('header:', qname, id5)
@@ -1009,7 +1015,9 @@ dos 2.1:
 dos 2.5
     in 8050 drives. disk changes are detected.
     2083 blocks total, 2052 free, 224 dir entries.
-    REL files are still limited to 720 data blocks (180 kB).
+    REL files are still limited to 720 data blocks (180 kB), but these disks
+    may have been been used in 8250 drives, therefore REL files on a dos 2.5
+    disk may use the dos 2.7 format, i.e. with a super side sector - beware!
 dos 2.6
     in 2031/4031 drives (and later in 1540, 1541, 1551, ...).
     basically dos 2.5, but
@@ -1018,10 +1026,9 @@ dos 2.6
 
 dos 2.7
     in 8250 drives (double-sided)
-    new: super side sector, so REL files can use the whole disk.
-    docs claim sss holds 127 pointers (each a group of six side sectors),
-    and side sectors have $fe instead of own number.
-    (1581 and CMD docs say sss holds $fe byte plus 126 pointers)
+    new: super side sector, so REL files can use the whole disk. but as this is
+    incompatible with dos 2.5, support for sss can be switched on/off via m-w
+    command. so image files of this type may hold REL file with or without sss!
 dos 3.0
     in D9060 and D9090 hard disks
 
@@ -1033,8 +1040,6 @@ dos 3.1
 
 dos 10 (is this based on 2.7?)
     in 1581 drives (but format on disk is "3D")
-    knows super side sector (-> 126 groups of six side sectors), so
-    REL file can use whole disk.
-    AFAIK the sss is optional and only gets created when needed (TODO: test this!)
-    (in dos 2.7, sss may be mandatory?).
+    uses super side sector (-> up to 126 groups of six side sectors),
+    so REL file can use whole disk.
 """
