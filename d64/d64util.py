@@ -31,6 +31,28 @@ def _bam_offset_and_bit(sector):
     # bitmap bytes are little-endian, lsb first:
     return sector >> 3, 1 << (sector & 7)
 
+# error codes
+_errorcodes_map = {
+    1: 1,   # ok
+    2: 2,   # header prefix not found
+    3: 3,   # sync not found
+    4: 4,   # data prefix not found
+    5: 5,   # data checksum error
+    6: 6,   # decoding error
+    9: 9,   # header checksum error
+    11: 11, # id mismatch
+    # mapping for wrong values (from status):
+    0: 1,
+    20: 2,
+    21: 3,
+    22: 4,
+    23: 5,
+    24: 6,
+    27: 9,
+    29: 11,
+}
+_errorcodes_chars = "X.2s4c6789hi"  # characters for display (X=illegal, .=ok)
+
 ################################################################################
 # virtual base class
 
@@ -81,6 +103,12 @@ class d64(object):
         # sanity check:
         if self.blocks_total != lba:
             sys.exit("BUG: total number of blocks is inconsistent!")
+        # handle error codes separately
+        self.errorblock = self.body[lba * 256:]
+        self.body = self.body[:lba * 256]
+        # display error block
+        if _debuglevel >= 2:
+            self._print_error_block()
 
     def _check_track_num(self, track):
         """_check_track_num(int)
@@ -163,10 +191,30 @@ class d64(object):
             _debug(1, "Flushing to disk.")
             self.fh.seek(0)
             self.fh.write(self.body)
+            self.fh.write(self.errorblock)
             self.fh.flush()
             self.need_writeback = False
         else:
             _debug(1, "Nothing changed, no need to flush to disk.")
+
+    def _print_error_block(self):
+        """
+        Show contents of error block
+        """
+        if self.errorblock:
+            print("Error block:")
+            offset = 0
+            for track in range(1, self.maxtrack + 1):
+                out = "%3d: " % track
+                for sector in range(self.sectors_of_track(track)):
+                    code = self.errorblock[offset]
+                    offset += 1
+                    code = _errorcodes_map.get(code, 0) # 0 is invalid
+                    char = _errorcodes_chars[code]
+                    out += char
+                print(out)
+        else:
+            print("Image does not have an error block.")
 
     def _check_totals(self, ts, first_byte_offset, size, howmanytracks, firsttrack):
         """
