@@ -421,12 +421,29 @@ class d64(object):
         """
         self._virtualfn()
 
+    def yield_ts_chain(self, ts):
+        """
+        Follow link pointers and return each block as (ts, data) tuple.
+        """
+        track, sector = ts
+        all_used_ts = set()
+        while track:
+            # sanity check
+            if (track, sector) in all_used_ts:
+                raise Exception("Block chain loops back to itself, please check disk image!")
+            all_used_ts.add((track, sector))
+            # read block, go on with link
+            block = self.read_ts((track, sector))
+            yield (track, sector), block
+            track, sector = block[0:2]
+
     def read_directory_entries(self, include_invisible=False):
         """
         Return directory entries as tuples:
         (index, raw entry (30 bytes), tuple might grow in future...)
         Setting include_invisible to True yields even the empty entries.
         """
+        # FIXME - make use of yield_ts_chain()!
         ts = self.directory_ts
         all_used_ts = set() # for sanity check
         entry_number = 0    # index, so caller can unambiguously reference each entry
@@ -548,6 +565,7 @@ class d64(object):
         """
         Free all connected blocks, following the chain of link pointers.
         """
+        # FIXME - make use of yield_ts_chain()!
         track, sector = ts
         all_used_ts = set()
         while track:
@@ -1013,7 +1031,61 @@ def show_directory(img, second_charset, full=False):
     print(freeblocks["shown"], "blocks free (+%d in dir track)" % freeblocks["dir"])
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
 
-def _process_file(file, second_charset, full=False):
+def extract_block_sequence(img, ts, outname, blockcount):
+    """
+    Extract a number of consecutive blocks to file (CBM "partitions")
+    """
+    print("TODO: extract %d blocks beginning at t%ds%d to <%s>." % (blockcount, ts[0], ts[1], outname))
+
+def extract_block_chain(img, ts, outname):
+    """
+    Extract block chain to file
+    """
+    print("extracting", outname)
+    body = bytes()
+    for ts, datablock in img.yield_ts_chain(ts):
+        if datablock[0]:
+            body += datablock[2:]
+        else:
+            body += datablock[2:datablock[1]+1]
+    try:
+        file = open(outname, "wb")
+        file.write(body)
+    except OSError as e:
+        print("Error: Could not open " + outname + ": " + e.strerror, file=sys.stderr)
+        return
+    except Exception as e:
+        print(e, "\n", file=sys.stderr)
+        return
+    #print("length:", len(body))
+
+def extract_all(img, full=False):
+    """
+    Extract all files to current directory.
+    """
+    for entry in img.read_directory_entries(include_invisible=full):
+        index = entry[0]
+        bin30 = entry[1]
+        filetype = bin30[0]
+        ts = bin30[1:3]
+        cbmname = from_petscii(bin30[3:19], second_charset=True)
+        cbmname = cbmname.replace("=", "=3D")
+        cbmname = cbmname.replace("/", "=2F")
+        outname = ('%03d-' % index) + cbmname
+        outname += "." if filetype & 128 else ".splat."
+        outname += from_petscii(filetypes(filetype), second_charset=True)
+        if (filetype & 15) == 4:
+            # for REL files, add record size to name
+            outname += "%03d" % bin30[21]
+        outname += ".locked" if filetype & 64 else ""
+        if (filetype & 15) == 5:
+            # CBM files are partitions, i.e. without link pointers
+            blockcount = int.from_bytes(bin30[28:30], "little")
+            extract_block_sequence(img, ts, outname, blockcount)
+        else:
+            extract_block_chain(img, ts, outname)
+
+def _process_file(file, second_charset, extract=False, full=False):
     try:
         img = DiskImage(file)
     except OSError as e:
@@ -1023,7 +1095,10 @@ def _process_file(file, second_charset, full=False):
         print(e, "\n", file=sys.stderr)
         return
     img.bam_check()
-    show_directory(img, second_charset, full=full)
+    if extract:
+        extract_all(img, full=full)
+    else:
+        show_directory(img, second_charset, full=full)
 
 def _main():
     global _debuglevel
@@ -1038,13 +1113,14 @@ If run directly, the directory of the given file(s) is displayed.
     parser.add_argument("-d", "--debug", action="count", default=0, help="increase debugging output")
     parser.add_argument("-f", "--full", action="store_true", help="show hidden data as well")
     parser.add_argument("-l", "--list", action="store_true", help="list supported formats")
+    parser.add_argument("-x", "--extract", action="store_true", help="extract all files to current directory")
     parser.add_argument("files", metavar="IMAGEFILE.D64", nargs='+', help="Disk image file.")
     args = parser.parse_args()
     _debuglevel += args.debug
     if args.list:
         list_formats()
     for file in args.files:
-        _process_file(file, args.charset, full=args.full)
+        _process_file(file, args.charset, extract=args.extract, full=args.full)
 
 if __name__ == "__main__":
     _main()
