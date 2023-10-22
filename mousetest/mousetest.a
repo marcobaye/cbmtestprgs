@@ -166,6 +166,7 @@ mainloop	; get state of joyport
 		jsr amiga_st_poll	; shared function for buttons
 		jsr cx22_poll
 		jsr koala_poll
+		jsr lightpen_poll
 		; check whether to reset positions
 		lda #MODIFIED8 & 0	: reset_pos = * - 1	; selfmod, but init to zero
 		beq ++
@@ -316,13 +317,44 @@ restrict	lda table_x_hi, x
 	!src "cx22.a"
 	!src "koala.a"
 
+lightpen_poll	; x coordinate
+		ldx #0	; X = x_high
+		lda vic_xlp	; this register only has half resolution, so
+		asl	; double it
+		bcc +
+			inx	; X = x_high
++		; compensate for offsets (different light pens have different offsets, so these values are only "good enough")
+		sec
+		sbc #48	; arbitrary x offset
+		sta table_x_lo + ENUM_LIGHTPEN
+		bcs +
+			dex
++		stx table_x_hi + ENUM_LIGHTPEN
+		; y coordinate
+		lda vic_ylp
+		ldx #0	; X = y_high
+		sec
+		sbc #56	; arbitrary y offset
+		sta table_y_lo + ENUM_LIGHTPEN
+		bcs +
+			dex
++		stx table_y_hi + ENUM_LIGHTPEN
+; restrict coordinate range
+		ldx #ENUM_LIGHTPEN
+		jsr restrict
+		ldx #ENUM_LIGHTPEN + ENUM_TOTAL
+		jmp restrict
 
 ; tables
+	.XDELTA	= 32
+	.XSTART	= 4 + (320 - ENUM_TOTAL * .XDELTA) / 2
 initial_x_lo	!for .i, 0, ENUM_TOTAL - 1 {
-			!by 70 + .i * 32	; x lo
+			!by <(.XSTART + .i * .XDELTA)	; x lo
 		}
 		!fill ENUM_TOTAL, 64	; y lo
-		!fill ENUM_TOTAL	; x hi
+		!for .i, 0, ENUM_TOTAL - 1 {
+			!by >(.XSTART + .i * .XDELTA)	; x hi
+		}
 		!fill ENUM_TOTAL	; y hi
 
 max_x_lo	!fill ENUM_TOTAL, <MAX_COORD_X

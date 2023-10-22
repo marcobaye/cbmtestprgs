@@ -10,7 +10,8 @@
 	ENUM_ATARIST	= 3
 	ENUM_CX22	= 4
 	ENUM_KOALA	= 5
-	ENUM_TOTAL	= 6
+	ENUM_LIGHTPEN	= 6
+	ENUM_TOTAL	= 7
 
 ; zp variables
 !addr	tmp	= $fa

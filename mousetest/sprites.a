@@ -204,6 +204,30 @@ sprite_koala	+spriteline %########################
 		+spriteline %########........########
 		+spriteline %########################
 
+	* = sprites + 64 * ENUM_LIGHTPEN, invisible
+		;	     765432107654321076543210
+sprite_lightpen	+spriteline %########################
+		+spriteline %########################
+		+spriteline %#.######..##........####
+		+spriteline %##.###..##..########.###
+		+spriteline %###...#########..####.##
+		+spriteline %##############.##.###.##
+		+spriteline %#############.####.##.##
+		+spriteline %############.#####.##.##
+		+spriteline %###########..######..###
+		+spriteline %##########...###########
+		+spriteline %#########...############
+		+spriteline %########...#############
+		+spriteline %#######...##############
+		+spriteline %######...###############
+		+spriteline %#####...################
+		+spriteline %####...#################
+		+spriteline %###...##################
+		+spriteline %##...###################
+		+spriteline %##..####################
+		+spriteline %########################
+		+spriteline %########################
+
 	* = sprites + 64 * ENUM_TOTAL - 1	; go on after sprites
 
 	!warn "There are ", sprites - .hole, " unused bytes before the sprites."	; atm, 2 bytes
