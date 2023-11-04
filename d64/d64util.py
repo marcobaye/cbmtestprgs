@@ -879,15 +879,72 @@ class _1581(d64):
         return ts
 
 ################################################################################
+# disk format of CMD native partitions
+# file extension is .dnp
+
+class _cmdnative(d64):
+    name = "CMD native"
+    blocks_total = -1   # dynamic, multiple of 256, 1+1+32+1 are always allocated
+#    maxtrack = -1   # dynamic!
+    track_length_changes = {1: 256}  # all tracks have 256 sectors
+    header_ts_and_offset = (1, 1), 4   # where to find diskname and five-byte "pseudo id"
+#    bam_blocks = [(1, 2), (1, 3)]   # ...up and including (1, 33)!
+    bam_start_size_maxperblock = (0, 32, 8)
+    directory_ts = (1, 34)
+#    std_max_dir_entries = -1    # for writing directory (dynamic!)
+    std_directory_interleave = 1
+    std_file_interleave = 1
+
+    def __init__(self, filesize):
+        # this inhibits the base class's exception,
+        self.maxtrack = filesize // 65536    # and we need to calculate number of tracks
+        self.blocks_total = filesize // 256
+        self.bam_counters = dict()
+
+    def bam_check(self):
+        _debug(1, "Checking CMD native BAM")
+        # BAM bitmaps are in blocks (1,2) up to and including (1,33),
+        # but there are no counters (because 0..256 does not fit in a byte),
+        # so we cannot use the std function:
+        bits_block = None
+        for track in range(1, self.maxtrack + 1):
+            entry = track & 7
+            if (entry == 0) or (bits_block == None):
+                bits_block = self.read_ts((1, (track >> 3) + 2))
+            sum = 0
+            for i in range(32):
+                sum += _popcount(bits_block[entry * 32 + i])
+            _debug(9, "track %d: %d free blocks" % (track, sum))
+            self.bam_counters[track] = sum
+
+    def read_free_blocks(self):
+        """
+        Return dictionary of free blocks per track.
+        There are three additional keys, "shown", "dir" and "all", where
+        "shown" + "dir" == "all"
+        """
+        _debug(3, "Reading free blocks dict")
+        d = dict()
+        sum = 0
+        for track in range(1, self.maxtrack + 1):
+            count = self.bam_counters[track]
+            d[track] = count
+            sum += count
+        d["all"] = sum
+        d["dir"] = 0
+        d["shown"] = sum
+        return d
+
+################################################################################
 # wrapper stuff
 
 # collect supported sizes and largest of them so files can be identified
-_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250)
+_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _cmdnative)
 _type_of_size = dict()
 for imgtype in _supported:
     _type_of_size[imgtype.blocks_total * 256] = (imgtype, False)    # no error info
     _type_of_size[imgtype.blocks_total * 257] = (imgtype, True) # with error info
-_largest_size = max(_type_of_size.keys())
+_largest_size = 255*256*256 # for DNP, originally was max(_type_of_size.keys())
 del imgtype # we do not want this to pop up in the online help...
 
 def list_formats():
@@ -913,10 +970,15 @@ def DiskImage(filename, writeback=False, writethrough=False):
     if not readonly:
         body = bytearray(body)  # allow changes
     filesize = len(body)
-    if filesize not in _type_of_size:
-        raise Exception("Could not process " + filename + ": Image type not recognised")
-    img_type, error_info = _type_of_size[filesize]
-    obj = img_type()
+    if filesize in _type_of_size:
+        img_type, error_info = _type_of_size[filesize]
+        obj = img_type()
+    else:
+        if (0 < filesize <= 255*256*256) and (filesize & 65535 == 0):
+            obj = _cmdnative(filesize)
+            error_info = False
+        else:
+            raise Exception("Could not process " + filename + ": Image type not recognised")
     _debug(1, filename, "is a", obj.name, "disk image" + (" with error info." if error_info else "."))
     obj._populate(fh=fh, body=body, readonly=readonly, writeback=writeback, writethrough=writethrough)
     return obj
@@ -1002,6 +1064,7 @@ def show_directory(img, second_charset, full=False):
     print('header:', qname, id5)
     nonempty = 0
     empty = 0
+    blocks_total = 0    # for debug output
     for entry in img.read_directory_entries(include_invisible=True):
         index = entry[0]
         bin30 = entry[1]
@@ -1016,7 +1079,8 @@ def show_directory(img, second_charset, full=False):
         qname = _quote(bin30[3:19])
         misc = bin30[19:28]
         blocks = bin30[28:30]
-        line = '%3d: %5d ' % (index, int.from_bytes(blocks, "little"))
+        blocks = int.from_bytes(blocks, "little")
+        line = '%3d: %5d ' % (index, blocks)
         line += from_petscii(qname, second_charset)
         line += " " if filetype & 128 else "*"
         line += from_petscii(filetypes(filetype), second_charset)
@@ -1027,9 +1091,14 @@ def show_directory(img, second_charset, full=False):
             line += " : "
             line += misc.hex(" ")
         print(line)
+        if filetype:
+            blocks_total += blocks
     freeblocks = img.read_free_blocks()
-    print(freeblocks["shown"], "blocks free (+%d in dir track)" % freeblocks["dir"])
+    #print(freeblocks)
+    shown_free = freeblocks["shown"]
+    print(shown_free, "blocks free (+%d in dir track)" % freeblocks["dir"])
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
+    #_debug(1, "%d + %d = %d" % (blocks_total, shown_free, blocks_total + shown_free))
 
 def extract_block_sequence(img, ts, outname, blockcount):
     """
