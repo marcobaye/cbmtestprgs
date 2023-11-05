@@ -268,7 +268,17 @@ class d64(object):
             else:
                 d["shown"] += freeblocks
 
-    def bam_check(self, alt_maxtrack=None):
+    # FIXME: define *exactly* what this fn is for!
+    # atm it just prints errors to stdout, so it's just info for the user - but
+    #   then it should be explicitly requested/disabled by cli arg.
+    # it _could_ set a flag for "BAM is not reliable" which then would have to
+    #   be checked by other (write) functions, but then this fn should be called
+    #   automatically when opening the image file.
+    # it _could_ switch the image to read-only mode, but that's bad because not
+    #   all writes need a valid BAM.
+    # ...and if this tool ever gets a "validate" fn, it needs to be fine-grained
+    #   about what the user actually wants to be fixed.
+    def check_bam_counters(self, alt_maxtrack=None):
         """
         Check BAM for internal consistency: Do counters match bit fields?
         This does not check allocation of files!
@@ -743,9 +753,10 @@ class _40track(_1541):
     blocks_total = 768  # 749 free
     maxtrack = 40
 
-    def bam_check(self):
-        super().bam_check(alt_maxtrack=35)  # let 1541 class check the first side...
+    def check_bam_counters(self):
+        super().check_bam_counters(alt_maxtrack=35) # let 1541 class check the first side...
         # ...and now check extra tracks:
+        print("FIXME: Checking BAM counters of tracks 36..40 is not implemented.")
         # TODO
         # AFAIK there are two different ways to store the additional 5*4 bytes,
         # either at the start or at the end of the "unused" part of t18s0.
@@ -778,8 +789,8 @@ class _1571(_1541):
     track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17, 35+1: 21, 35+18: 19, 35+25: 18, 35+31: 17}
     std_file_interleave = 6
 
-    def bam_check(self):
-        super().bam_check(alt_maxtrack=35)  # let 1541 class check the first side...
+    def check_bam_counters(self):
+        super().check_bam_counters(alt_maxtrack=35) # let 1541 class check the first side...
         # ...and now check second side:
         #_debug(1, "Checking 1571 BAM (second side)")
         # BAM for second side is split into two parts (totals at 18,0 and bitmaps at 53,0),
@@ -901,11 +912,15 @@ class _cmdnative(d64):
         self.blocks_total = filesize // 256
         self.bam_counters = dict()
 
-    def bam_check(self):
-        _debug(1, "Checking CMD native BAM")
+    def check_bam_counters(self):
+        # CMD native format does not have "free blocks on track" counters,
+        # so they cannot disagree with bitmaps, so check always succeeds:
+        pass
+
+    def _fake_bam_counters(self):
         # BAM bitmaps are in blocks (1,2) up to and including (1,33),
         # but there are no counters (because 0..256 does not fit in a byte),
-        # so we cannot use the std function:
+        # so we count the bits ourself:
         bits_block = None
         for track in range(1, self.maxtrack + 1):
             entry = track & 7
@@ -924,6 +939,8 @@ class _cmdnative(d64):
         "shown" + "dir" == "all"
         """
         _debug(3, "Reading free blocks dict")
+        if not self.bam_counters:
+            self._fake_bam_counters()
         d = dict()
         sum = 0
         for track in range(1, self.maxtrack + 1):
@@ -934,6 +951,13 @@ class _cmdnative(d64):
         d["dir"] = 0
         d["shown"] = sum
         return d
+
+################################################################################
+# TODO: add disk formats of CMD FD images:
+# file extension is .d1m, size is 829440
+# file extension is .d2m, size is 1658880
+# file extension is .d4m, size is 3317760
+# all have 81 tracks, partition table is at end!
 
 ################################################################################
 # wrapper stuff
@@ -1163,7 +1187,7 @@ def _process_file(file, second_charset, extract=False, full=False):
     except Exception as e:
         print(e, "\n", file=sys.stderr)
         return
-    img.bam_check()
+    img.check_bam_counters()    # TODO: add cli arg(s) to enable/disable this
     if extract:
         extract_all(img, full=full)
     else:
