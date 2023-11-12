@@ -24,13 +24,6 @@ def _popcount(integer):
         integer = integer & (integer - 1)
     return counted
 
-def _bam_offset_and_bit(sector):
-    """
-    Convert sector number to byte offset and bit value for accessing BAM bitmap.
-    """
-    # bitmap bytes are little-endian, lsb first:
-    return sector >> 3, 1 << (sector & 7)
-
 # error codes
 _errorcodes_map = {
     1: 1,   # ok
@@ -76,9 +69,11 @@ class d64(object):
         std_directory_interleave: block interleave for directory
         std_file_interleave: block interleave for files
     """
+    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR"}   # decoded file types
 
     def __init__(self):
-        raise Exception("Only subclasses (1541, 1571, 1581, ...) can be instantiated!")
+        if "blocks_total" not in self.__dir__():
+            raise Exception("Only subclasses (1541, 1571, 1581, ...) can be instantiated!")
 
     def _populate(self, fh, body, readonly, writeback, writethrough):
         """
@@ -269,6 +264,7 @@ class d64(object):
                 d["shown"] += freeblocks
 
     # FIXME: define *exactly* what this fn is for!
+    # it was initially written as an easy sanity check to see if the BAM was found.
     # atm it just prints errors to stdout, so it's just info for the user - but
     #   then it should be explicitly requested/disabled by cli arg.
     # it _could_ set a flag for "BAM is not reliable" which then would have to
@@ -331,6 +327,14 @@ class d64(object):
             sys.exit("BUG: inconsistent number of tracks when reading free blocks!")
         return d
 
+    def bam_offset_and_bit(self, sector):
+        """
+        Convert sector number to byte offset and bit value for accessing BAM bitmap.
+        """
+        # bitmap bytes are little-endian, lsb first:
+        return sector >> 3, 1 << (sector & 7)
+        # ...except for CMD native partitions, which is why they have their own version of this fn.
+
     # TODO - simplify for non-1571 and give 1571 its own version
     def _release_block(self, ts, entry, totals_offset_step, totals_block, bitmaps_offset_step, bitmaps_block=None):
         """
@@ -350,7 +354,7 @@ class d64(object):
         if bitmaps_block == None:
             bitmaps_block = totals_block
         # calculate offsets
-        byte_offset, bit_value = _bam_offset_and_bit(sector)
+        byte_offset, bit_value = self.bam_offset_and_bit(sector)
         bitmaps_offset += entry * bitmaps_step + byte_offset
         totals_offset += entry * totals_step
         if bitmaps_block[bitmaps_offset] & bit_value:
@@ -390,7 +394,7 @@ class d64(object):
         cand_sector = wanted_sector # we start the search with the wanted sector...
         num_sectors = self.sectors_of_track(track)  # ...and this is where we wrap around
         while True:
-            byte_offset, bit_value = _bam_offset_and_bit(cand_sector)
+            byte_offset, bit_value = self.bam_offset_and_bit(cand_sector)
             bitmap_byte_offset = bitmaps_offset + byte_offset
             # bit clear: sector is not available, i.e. is allocated or does not even exist
             # bit set: sector is available, i.e. can be allocated
@@ -588,6 +592,19 @@ class d64(object):
             track, sector = block[0:2]
         self.release_blocks(all_used_ts)
 
+    def filetype(self, filetype):
+        """
+        Convert CBM file type to text representation.
+        """
+        ret = b" " if filetype & 128 else b"*"
+        ft = filetype & 15
+        if ft in self.filetypes:
+            ret += self.filetypes[ft]   # supported file types are decoded
+        else:
+            ret += b"0X%X" % ft # unsupported file types are shown as hex digit
+        ret += b"<" if filetype & 64 else b" "
+        return ret
+
 ################################################################################
 # CBM DOS 1 disk format, as used by 2040/3040 drives
 # file extension is .d67 (at least in VICE)
@@ -605,10 +622,6 @@ class _dos1(d64):
     #std_directory_interleave =
     #std_file_interleave =
 
-    def __init__(self):
-        # this inhibits the base class's exception...
-        pass    # ...but there is nothing to do!
-
 ################################################################################
 # CBM DOS 2 disk format, as used by 4040, 2031, 4031, 1540, 1541, 1551, 1570 drives
 # file extension is mostly .d64, sometimes .d41
@@ -625,10 +638,7 @@ class _1541(d64):
     std_max_dir_entries = 144   # for writing directory
     std_directory_interleave = 3
     std_file_interleave = 10
-
-    def __init__(self):
-        # this inhibits the base class's exception...
-        pass    # ...but there is nothing to do!
+    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL" }    # decoded file types
 
     def release_blocks(self, set_of_ts):
         bamblock = self.read_ts((18, 0))
@@ -658,10 +668,7 @@ class _8050(d64):
     std_max_dir_entries = 224   # for writing directory
     #std_directory_interleave = 3   ?
     #std_file_interleave = 10       ?
-
-    def __init__(self):
-        # this inhibits the base class's exception...
-        pass    # ...but there is nothing to do!
+    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL" }    # decoded file types
 
     def release_blocks(self, set_of_ts):
         bamblock380 = self.read_ts((38, 0))
@@ -697,10 +704,6 @@ class _8250(_8050):
     maxtrack = 154
     track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
     bam_blocks = [(38, 0), (38, 3), (38, 6), (38, 9)]
-
-    def __init__(self):
-        # this inhibits the base class's exception...
-        pass    # ...but there is nothing to do!
 
     def release_blocks(self, set_of_ts):
         bamblock380 = self.read_ts((38, 0))
@@ -843,6 +846,8 @@ class _1571(_1541):
 ################################################################################
 # disk format of 1581 drives
 # file extension is .d81 or .d64
+# TODO: display the "1581 autoboot" flag from the header block as debug info with the directory?
+#   (that is bit 6 of byte 7 in t40s1 and t40s2)
 
 class _1581(d64):
     name = "1581"
@@ -860,10 +865,7 @@ class _1581(d64):
     #header_ts_and_offset = (50, 0), 4
     #bam_blocks = [(50, 1), (50, 2)]
     #directory_ts = (50, 3)
-
-    def __init__(self):
-        # this inhibits the base class's exception...
-        pass    # ...but there is nothing to do!
+    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL", 5:b"CBM" }  # decoded file types
 
     def release_blocks(self, set_of_ts):
         bamblock1 = self.read_ts((40, 1))
@@ -892,6 +894,8 @@ class _1581(d64):
 ################################################################################
 # disk format of CMD native partitions
 # file extension is .dnp
+# TODO: display the "native autoboot" flag from the header block as debug info with the directory?
+# TODO: read and check "track number of last available track in partition" (byte 8 of t1s2)
 
 class _cmdnative(d64):
     name = "CMD native"
@@ -905,10 +909,10 @@ class _cmdnative(d64):
 #    std_max_dir_entries = -1    # for writing directory (dynamic!)
     std_directory_interleave = 1
     std_file_interleave = 1
+    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL", 6:b"DIR" }  # decoded file types
 
     def __init__(self, filesize):
-        # this inhibits the base class's exception,
-        self.maxtrack = filesize // 65536    # and we need to calculate number of tracks
+        self.maxtrack = (filesize + 65535) // 65536 # we need to calculate number of tracks
         self.blocks_total = filesize // 256
         self.bam_counters = dict()
 
@@ -922,6 +926,7 @@ class _cmdnative(d64):
         # but there are no counters (because 0..256 does not fit in a byte),
         # so we count the bits ourself:
         bits_block = None
+        bytes_done = 0  # counter so we know when we reached end of "reserved" area
         for track in range(1, self.maxtrack + 1):
             entry = track & 7
             if (entry == 0) or (bits_block == None):
@@ -929,8 +934,15 @@ class _cmdnative(d64):
             sum = 0
             for i in range(32):
                 sum += _popcount(bits_block[entry * 32 + i])
+                bytes_done += 1
+                if bytes_done == 8:
+                    reserved_area_sum = sum # first 64 blocks
             _debug(9, "track %d: %d free blocks" % (track, sum))
             self.bam_counters[track] = sum
+        # a correct directory display does not include the first 64 blocks in
+        # its "free" result, so we store that number as an extra key and later
+        # it can be subtracted when needed:
+        self.bam_counters["reserved_area"] = reserved_area_sum
 
     def read_free_blocks(self):
         """
@@ -947,23 +959,106 @@ class _cmdnative(d64):
             count = self.bam_counters[track]
             d[track] = count
             sum += count
+        reserved_area_sum = self.bam_counters["reserved_area"]
         d["all"] = sum
-        d["dir"] = 0
-        d["shown"] = sum
+        d["dir"] = reserved_area_sum
+        d["shown"] = sum - reserved_area_sum
         return d
 
+    def bam_offset_and_bit(self, sector):
+        """
+        Convert sector number to byte offset and bit value for accessing BAM bitmap.
+        """
+        # bitmap bytes are little-endian (just like in all other formats), but
+        # most significant bit goes first (which differs from all other formats):
+        return sector >> 3, 128 >> (sector & 7)
+
 ################################################################################
-# TODO: add disk formats of CMD FD images:
+# disk formats of CMD FD images (CMD called them "partitionable formats"):
 # file extension is .d1m, size is 829440
 # file extension is .d2m, size is 1658880
 # file extension is .d4m, size is 3317760
-# all have 81 tracks, partition table is at end!
+# all have 81 tracks, where track 81 holds the partition table
+# supported partition types are:
+#   1: native
+#   2: 1541emu  (takes 684 blocks, which is 1 too many!)
+#   3: 1571emu  (takes 1368 blocks, which is 2 too many!)
+#   4: 1581emu  (takes 3200 blocks, which is correct)
+#       -> so I guess each partition must start on a block divisible by four, maybe
+#       because d2m and d4m use 1024-byte hardware sectors.
+# CAUTION, data in "partition directory" is partly bigendian:
+# last three bytes of entry are not "zero, numblocks low, numblocks high",
+# but "size high, size med, size low" where size is given in 512-byte blocks.
+# location on disk is given in the same format.
+# layout after name: start block (high/middle/low), 5 null bytes, size (high/middle/low)
+# TODO: fix display of partition directory:
+#   header line should be '255 "cmd fd          " fd 1h'    (may differ on harddisk and/or RAMLink)
+#   "number of blocks" should display partition number
+#   do not display any "blocks free" number (or maybe do, but use sensible data)
+# TODO: mark the default partition in the directory
+
+class _cmdpartitionable(d64):
+    """
+    virtual base class for the three CMD FD series formats.
+    """
+    maxtrack = 81
+    header_ts_and_offset = (1, 0), 5   # where to find diskname and five-byte "pseudo id"
+    directory_ts = (1, 0)
+    def ts_to_lba(self, ts):
+        # partition table uses "track 1" link pointers, so fake lba address accordingly:
+        self._check_ts(ts)
+        track, sector = ts
+        return self.parttable_block_offset + sector
+
+    def read_free_blocks(self):
+        # just use all zero for now:
+        d = dict()
+        for track in range(1, self.maxtrack + 1):
+            d[track] = 0
+        d["all"] = 0
+        d["dir"] = 0
+        d["shown"] = 0
+        return d
+
+    def check_bam_counters(self):
+        # partitions use consecutive space, so there is not really a BAM, so
+        # check always succeeds:
+        pass
+
+    partition_types = { 0:b"*DEL", 1:b" NAT", 2:b" D41", 3:b" D71", 4:b" D81", 255:b" SYS" }
+    def filetype(self, filetype):
+        """
+        Convert CBM file type to text representation.
+        """
+        if filetype in self.partition_types:
+            t = self.partition_types[filetype] + b" "
+        else:
+            t = b" 0X%2X" % filetype    # unsupported types are shown as hex
+        return t
+
+class _cmdfd1m(_cmdpartitionable):
+    name = "CMD DD partitioned"
+    blocks_total = 3240
+    track_length_changes = {1: 40}  # all tracks have 40 sectors
+    parttable_block_offset = 80 * 40 + 8
+
+class _cmdfd2m(_cmdpartitionable):
+    name = "CMD FD-2000 partitioned"
+    blocks_total = 6480
+    track_length_changes = {1: 80}  # all tracks have 80 sectors
+    parttable_block_offset = 80 * 80 + 8
+
+class _cmdfd4m(_cmdpartitionable):
+    name = "CMD FD-4000 partitioned"
+    blocks_total = 12960
+    track_length_changes = {1: 160} # all tracks have 160 sectors
+    parttable_block_offset = 80 * 160 + 8
 
 ################################################################################
 # wrapper stuff
 
 # collect supported sizes and largest of them so files can be identified
-_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _cmdnative)
+_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _cmdnative, _cmdfd1m, _cmdfd2m, _cmdfd4m)
 _type_of_size = dict()
 for imgtype in _supported:
     _type_of_size[imgtype.blocks_total * 256] = (imgtype, False)    # no error info
@@ -998,7 +1093,11 @@ def DiskImage(filename, writeback=False, writethrough=False):
         img_type, error_info = _type_of_size[filesize]
         obj = img_type()
     else:
-        if (0 < filesize <= 255*256*256) and (filesize & 65535 == 0):
+        # FIXME: CMD FD docs give conflicting information:
+        # a) the size of native partitions can be chosen in 64K steps
+        # b) a DD disk can be partitioned to hold an 800K native partition
+        # if a) is true, we can check for "filesize & 65535 == 0" instead:
+        if (0 < filesize <= 255*256*256) and (filesize & 255 == 0):
             obj = _cmdnative(filesize)
             error_info = False
         else:
@@ -1048,27 +1147,6 @@ def from_petscii(bindata, second_charset):
             ret += "\033[27m"   # ANSI revs off
     return ret
 
-def filetypes(filetype):
-    """
-    Convert CBM file type to text representation.
-    """
-    filetype &= 15
-    if filetype == 0:
-        return b"DEL"
-    if filetype == 1:
-        return b"SEQ"
-    if filetype == 2:
-        return b"PRG"
-    if filetype == 3:
-        return b"USR"
-    if filetype == 4:
-        return b"REL"
-    if filetype == 5:
-        return b"CBM"   # introduced in 1581
-    if filetype == 6:
-        return b"DIR"   # introduced by CMD
-    return b"0X%X" % filetype
-
 def _quote(name16):
     """
     Helper function to add opening and closing quotes at correct positions.
@@ -1106,9 +1184,7 @@ def show_directory(img, second_charset, full=False):
         blocks = int.from_bytes(blocks, "little")
         line = '%3d: %5d ' % (index, blocks)
         line += from_petscii(qname, second_charset)
-        line += " " if filetype & 128 else "*"
-        line += from_petscii(filetypes(filetype), second_charset)
-        line += "<" if filetype & 64 else " "
+        line += from_petscii(img.filetype(filetype), second_charset)
         if full:
             line += " : "
             line += ts.hex(" ")
@@ -1165,12 +1241,11 @@ def extract_all(img, full=False):
         cbmname = cbmname.replace("=", "=3D")
         cbmname = cbmname.replace("/", "=2F")
         outname = ('%03d-' % index) + cbmname
-        outname += "." if filetype & 128 else ".splat."
-        outname += from_petscii(filetypes(filetype), second_charset=True)
+        outname += "."
+        outname += from_petscii(img.filetype(filetype), second_charset=True)
         if (filetype & 15) == 4:
             # for REL files, add record size to name
             outname += "%03d" % bin30[21]
-        outname += ".locked" if filetype & 64 else ""
         if (filetype & 15) == 5:
             # CBM files are partitions, i.e. without link pointers
             blockcount = int.from_bytes(bin30[28:30], "little")
