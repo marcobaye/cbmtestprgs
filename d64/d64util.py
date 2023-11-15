@@ -49,6 +49,9 @@ _errorcodes_chars = "X.2s4c6789hi"  # characters for display (X=illegal, .=ok)
 ################################################################################
 # virtual base class
 
+# FIXME - make block-based access to image into a separate class, so 1541 class
+# can run on top of part of a CMD image.
+
 class d64(object):
     """
     This class describes a cbm disc image. There are subclasses for 1541,
@@ -57,7 +60,8 @@ class d64(object):
     Constants:
         name: the name of the format, for example "1581"
         blocks_total: the number of 256-byte blocks per image file
-        maxtrack: highest track number (lowest is always 1)
+        mintrack: lowest track number (1)
+        maxtrack: highest track number
         track_length_changes: dict with "new" sectors-per-track value
         header_ts_and_offset: where to find disc name and five-byte
             "pseudo id"
@@ -68,8 +72,9 @@ class d64(object):
         std_max_dir_entries: maximum number of directory entries
         std_directory_interleave: block interleave for directory
         std_file_interleave: block interleave for files
+        filetypes: dict of supported file types
     """
-    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR"}   # decoded file types
+    mintrack = 1    # only D9060/D9090 differ, they use 0
 
     def __init__(self):
         if "blocks_total" not in self.__dir__():
@@ -90,7 +95,7 @@ class d64(object):
         self._blocks_before_track = {}
         lba = 0
         sectors = None  # trigger exception if track_length_changes has no "1" key!
-        for track in range(1, self.maxtrack + 1):
+        for track in range(self.mintrack, self.maxtrack + 1):
             sectors = self.track_length_changes.get(track, sectors) # get new length or keep old one
             self._sectors_of_track[track] = sectors
             self._blocks_before_track[track] = lba
@@ -110,8 +115,8 @@ class d64(object):
 
         Throw exception if track number is invalid for this image type.
         """
-        if track < 1:
-            raise Exception("Given track number was lower than 1.")
+        if track < self.mintrack:
+            raise Exception("Track number too low.")
         if track > self.maxtrack:
             raise Exception("Exceeded maximum track number.")
 
@@ -199,7 +204,7 @@ class d64(object):
         if self.errorblock:
             print("Error block:")
             offset = 0
-            for track in range(1, self.maxtrack + 1):
+            for track in range(self.mintrack, self.maxtrack + 1):
                 out = "%3d: " % track
                 for sector in range(self.sectors_of_track(track)):
                     code = self.errorblock[offset]
@@ -297,11 +302,11 @@ class d64(object):
 
     def read_header_fields(self):
         """
-        Return disk name and five-byte "pseudo id".
+        Return "drive", disk name and five-byte "pseudo id".
         """
         ts, of = self.header_ts_and_offset
         block = self.read_ts(ts)
-        return block[of:of+16], block[of+18:of+23]
+        return 0, block[of:of+16], block[of+18:of+23]
 
     def read_free_blocks(self, alt_maxtrack=None):
         """
@@ -606,7 +611,10 @@ class d64(object):
         return ret
 
 ################################################################################
-# CBM DOS 1 disk format, as used by 2040/3040 drives
+# CBM DOS 1.0 disk format, as used in CBM 2040 and CBM 3040 units.
+# tracks 18..24 have 20 sectors -> out of spec?
+# 690 blocks total, 670 free, 152 dir entries.
+# no REL files.
 # file extension is .d67 (at least in VICE)
 
 class _dos1(d64):
@@ -621,12 +629,30 @@ class _dos1(d64):
     std_max_dir_entries = 152   # for writing directory
     #std_directory_interleave =
     #std_file_interleave =
+    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR"}   # decoded file types
 
 ################################################################################
-# CBM DOS 2 disk format, as used by 4040, 2031, 4031, 1540, 1541, 1551, 1570 drives
+# CBM DOS 2.1 was used in CBM 4040 units and in upgraded 2040/3040 units.
+# tracks 18..24 had 19 sectors, so no longer out of spec.
+# 683 blocks total, 664 free, 144 dir entries.
+# new: REL files and @SAVE
+
+class _dos2p1(d64):
+    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL" }    # decoded file types
+    # this class does not contain anything else because the disk format is the
+    # same as the one that was later used by 1541 and friends, so see below.
+    # the only reason for this class is so both "1541" and "8050" can inherit
+    # the REL file definition...
+
+################################################################################
+# CBM DOS 2.6 was a merger of 2.1 and 2.5 (see below): basically it was a
+# downgrade of CBM DOS 2.5 to a single drive, but using the same disk format as
+# CBM DOS 2.1.
+# so the same disk format was used in CBM 4040 units, upgraded 2040/3040 units,
+# 2031, 4031, 1540, 1541, 1551 and 1570 units.
 # file extension is mostly .d64, sometimes .d41
 
-class _1541(d64):
+class _1541(_dos2p1):
     name = "1541"
     blocks_total = 683
     maxtrack = 35
@@ -638,7 +664,6 @@ class _1541(d64):
     std_max_dir_entries = 144   # for writing directory
     std_directory_interleave = 3
     std_file_interleave = 10
-    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL" }    # decoded file types
 
     def release_blocks(self, set_of_ts):
         bamblock = self.read_ts((18, 0))
@@ -653,10 +678,14 @@ class _1541(d64):
         return self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)
 
 ################################################################################
-# disk format of 8050 drives
+# CBM DOS 2.5 was used in CBM 8050 units.
+# new: disk changes were automatically detected
+# REL files were still limited to 720 data blocks (180 kB), but these disks
+# may have been been used in 8250 units, therefore REL files on a dos 2.5
+# disk may use the dos 2.7 format, i.e. with a super side sector - beware!
 # file extension is .d80
 
-class _8050(d64):
+class _8050(_dos2p1):
     name = "8050"
     blocks_total = 2083 # 2052 free
     maxtrack = 77
@@ -668,7 +697,6 @@ class _8050(d64):
     std_max_dir_entries = 224   # for writing directory
     #std_directory_interleave = 3   ?
     #std_file_interleave = 10       ?
-    filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL" }    # decoded file types
 
     def release_blocks(self, set_of_ts):
         bamblock380 = self.read_ts((38, 0))
@@ -695,7 +723,11 @@ class _8050(d64):
         return ts
 
 ################################################################################
-# disk format of 8250 / SFD-1001 drives
+# CBM DOS 2.7 was used in CBM 8250 units and SFD-1001 units.
+# new: support for double-sided discs
+# new: super side sector, so REL files can use the whole disk. but as this is
+# incompatible with CBM DOS 2.5, support for sss can be switched on/off via M-W
+# command. so image files of this type may hold REL file with or without sss!
 # file extension is .d82
 
 class _8250(_8050):
@@ -782,7 +814,10 @@ class _40track(_1541):
         raise Exception("Allocation of tracks 36..40 is not yet supported!")
 
 ################################################################################
-# disk format of 1571 drives
+# CBM DOS 3.0 in 1571 units and CBM DOS 3.1 in C128 DCRs extended the 1541 format
+# to double-sided discs (-> 1328 blocks free), but:
+# - on disc the format is still called "2A"
+# - there are no super side sectors, so REL files are limited to 720 data blocks.
 # file extension is .d71 or .d64
 
 class _1571(_1541):
@@ -844,7 +879,76 @@ class _1571(_1541):
         return ts
 
 ################################################################################
-# disk format of 1581 drives
+# CBM DOS 3.0 was used in D9060 and D9090 hard disk units
+# shit, these things actually have a track zero!
+
+class _d9090(_dos2p1):
+    name = "D9090"
+    blocks_total = 29376    # 29162 free -> track 0 is not counted though it is mostly free in BAM!
+    mintrack = 0
+    maxtrack = 152
+    track_length_changes = {0: 192} # all tracks have 192 sectors
+    header_ts_and_offset = (76, 20), 6  # where to find diskname and five-byte "pseudo id" (FIXME: read from t0s0!)
+    # 20 bam blocks, one every 8 tracks, starting at t1s0
+    # each contains 48 five-byte entries (counter byte and four bitmap bytes)
+    # 48*32 -> 8*192 -> each bam block manages eight tracks * 192 blocks.
+    directory_ts = (76, 10) # FIXME: read from t0s0!
+    first_bam_ts = (1, 0)   # FIXME: read from t0s0!
+
+    def check_bam_counters(self):
+        _debug(1, "Checking " + self.name + " BAM for internal consistency")
+        bam_ts = self.first_bam_ts
+        for track in range(self.mintrack, self.maxtrack+1):
+            entry = track & 7
+            if entry == 0:
+                bam_block = self.read_ts(bam_ts)
+                bam_ts = (bam_block[0], bam_block[1])
+            for part in range(6):
+                start = 16 + entry * 30 + part * 5
+                total = bam_block[start]
+                sum = 0
+                for i in range(4):
+                    sum += _popcount(bam_block[start + 1 + i])
+                if total == sum:
+                    _debug(9, "track %d, part %d: %d free blocks" % (track, part, sum))
+                else:
+                    print("BAM error for track %d, part %d: counter says %d, bitfield says %d!" % (track, part, total, sum), file=sys.stderr)
+
+    def read_free_blocks(self):
+        _debug(3, "Reading free blocks counters")
+        d = dict()
+        d["all"] = 0
+        d["dir"] = 0
+        d["shown"] = 0
+        bam_ts = self.first_bam_ts
+        for track in range(self.mintrack, self.maxtrack+1):
+            entry = track & 7
+            if entry == 0:
+                bam_block = self.read_ts(bam_ts)
+                bam_ts = (bam_block[0], bam_block[1])
+            freeblocks = 0
+            for part in range(6):
+                start = 16 + entry * 30 + part * 5
+                freeblocks += bam_block[start]
+            d[track] = freeblocks
+            d["all"] += freeblocks
+            if track:
+                d["shown"] += freeblocks
+            else:
+                d["dir"] += freeblocks
+        return d
+
+    def release_blocks(self, set_of_ts):
+        raise Exception("releasing blocks not implemented for D9090!")
+
+    def try_to_allocate(self, track, sector, exact):
+        raise Exception("allocating blocks not implemented for D9090!")
+
+################################################################################
+# CBM DOS 10.0 was used in 1581 units:
+# - on disc the format is called "3D".
+# - it knows about super side sectors, so REL files can use the whole disk.
+# new filetype: "CBM" for a sequence of consecutive blocks
 # file extension is .d81 or .d64
 # TODO: display the "1581 autoboot" flag from the header block as debug info with the directory?
 #   (that is bit 6 of byte 7 in t40s1 and t40s2)
@@ -893,8 +997,9 @@ class _1581(d64):
 
 ################################################################################
 # disk format of CMD native partitions
+# new filetype: "DIR" for sub-directories (but no support for "CBM" partitions)
 # file extension is .dnp
-# TODO: display the "native autoboot" flag from the header block as debug info with the directory?
+# TODO: display the "native autoboot" flag (byte 7 of t1s2) as debug info with the directory?
 # TODO: read and check "track number of last available track in partition" (byte 8 of t1s2)
 
 class _cmdnative(d64):
@@ -974,18 +1079,35 @@ class _cmdnative(d64):
         return sector >> 3, 128 >> (sector & 7)
 
 ################################################################################
-# disk formats of CMD FD images (CMD called them "partitionable formats"):
+# disk formats of CMD HD/FD images (CMD called them "partitionable formats"):
+# this format started with the CMD HD and was also used in RAMLink and CMD FDs.
+# up to 254 partitions possible (31 for RAMLink and FDs).
+# partitions are stored sequentially without any gaps, beginning with the
+# system partition. the system partition holds the DOS in case of HD and is
+# empty in case of FD.
+# 0 specifies the currently selected partition,
+# 1..254 specify partitions 1..254 (one of which is currently selected, and of
+#   which is selected per default after power-on)
+# 255 specifies the system partition (located first, so stored at offset 0)
+# FD formats:
 # file extension is .d1m, size is 829440
 # file extension is .d2m, size is 1658880
 # file extension is .d4m, size is 3317760
 # all have 81 tracks, where track 81 holds the partition table
 # supported partition types are:
+#   0: not created
 #   1: native
 #   2: 1541emu  (takes 684 blocks, which is 1 too many!)
 #   3: 1571emu  (takes 1368 blocks, which is 2 too many!)
 #   4: 1581emu  (takes 3200 blocks, which is correct)
 #       -> so I guess each partition must start on a block divisible by four, maybe
 #       because d2m and d4m use 1024-byte hardware sectors.
+#       this matches CMD HD docs, because there 1541emu partitions take 684 blocks,
+#       but 1571emu partitions take 1366 blocks -> HD uses 512-byte blocks.
+# only supported by HD:
+#   5: 1581 CP/M emulation
+#   6: print buffer
+#   7: foreign mode
 # CAUTION, data in "partition directory" is partly bigendian:
 # last three bytes of entry are not "zero, numblocks low, numblocks high",
 # but "size high, size med, size low" where size is given in 512-byte blocks.
@@ -1002,8 +1124,12 @@ class _cmdpartitionable(d64):
     virtual base class for the three CMD FD series formats.
     """
     maxtrack = 81
-    header_ts_and_offset = (1, 0), 5   # where to find diskname and five-byte "pseudo id"
     directory_ts = (1, 0)
+
+    # partition table does not really have header and id fields, so fake them:
+    def read_header_fields(self):
+        return 255, b"CMD FD          ", b"FD 1H"
+
     def ts_to_lba(self, ts):
         # partition table uses "track 1" link pointers, so fake lba address accordingly:
         self._check_ts(ts)
@@ -1058,7 +1184,7 @@ class _cmdfd4m(_cmdpartitionable):
 # wrapper stuff
 
 # collect supported sizes and largest of them so files can be identified
-_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _cmdnative, _cmdfd1m, _cmdfd2m, _cmdfd4m)
+_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _d9090, _cmdnative, _cmdfd1m, _cmdfd2m, _cmdfd4m)
 _type_of_size = dict()
 for imgtype in _supported:
     _type_of_size[imgtype.blocks_total * 256] = (imgtype, False)    # no error info
@@ -1159,11 +1285,11 @@ def show_directory(img, second_charset, full=False):
     """
     Show directory of image file.
     """
-    name, id5 = img.read_header_fields()
+    drive, name, id5 = img.read_header_fields()
     qname = _quote(name)    # FIXME - disk name uses a different quoting rule, end quote is *after* 16 chars!
     qname = from_petscii(qname, second_charset)
     id5 = from_petscii(id5, second_charset)
-    print('header:', qname, id5)
+    print('    ', drive, qname, id5)
     nonempty = 0
     empty = 0
     blocks_total = 0    # for debug output
@@ -1179,10 +1305,10 @@ def show_directory(img, second_charset, full=False):
                 continue
         ts = bin30[1:3]
         qname = _quote(bin30[3:19])
-        misc = bin30[19:28]
+        misc = bin30[19:28]  # ss track, ss sector, record length, 0, year, month, day, hour, minute
         blocks = bin30[28:30]
         blocks = int.from_bytes(blocks, "little")
-        line = '%3d: %5d ' % (index, blocks)
+        line = ('%3d: ' % index) + str(blocks).ljust(4) + " "
         line += from_petscii(qname, second_charset)
         line += from_petscii(img.filetype(filetype), second_charset)
         if full:
@@ -1196,7 +1322,7 @@ def show_directory(img, second_charset, full=False):
     freeblocks = img.read_free_blocks()
     #print(freeblocks)
     shown_free = freeblocks["shown"]
-    print(shown_free, "blocks free (+%d in dir track)" % freeblocks["dir"])
+    print("     %d blocks free (+%d in dir track)" % (shown_free, freeblocks["dir"]))
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
     #_debug(1, "%d + %d = %d" % (blocks_total, shown_free, blocks_total + shown_free))
 
@@ -1243,6 +1369,7 @@ def extract_all(img, full=False):
         outname = ('%03d-' % index) + cbmname
         outname += "."
         outname += from_petscii(img.filetype(filetype), second_charset=True)
+        # FIXME - make this into some "extract entry" method so there is no need to check for REL/CBM (which would fail in CMD partition tables anyway)
         if (filetype & 15) == 4:
             # for REL files, add record size to name
             outname += "%03d" % bin30[21]
@@ -1292,46 +1419,3 @@ If run directly, the directory of the given file(s) is displayed.
 
 if __name__ == "__main__":
     _main()
-
-"""
-dos 1.0:
-    in 2040 and 3040 drives.
-    tracks 18..24 have 20 sectors -> out of spec?
-    690 blocks total, 670 free, 152 dir entries.
-    no REL files.
-dos 2.1:
-    in 4040 drives and in upgraded 2040 and 3040 drives
-    tracks 18..24 have 19 sectors
-    683 blocks total, 664 free, 144 dir entries.
-    new: REL files and @SAVE
-dos 2.5
-    in 8050 drives. disk changes are detected.
-    2083 blocks total, 2052 free, 224 dir entries.
-    REL files are still limited to 720 data blocks (180 kB), but these disks
-    may have been been used in 8250 drives, therefore REL files on a dos 2.5
-    disk may use the dos 2.7 format, i.e. with a super side sector - beware!
-dos 2.6
-    in 2031/4031 drives (and later in 1540, 1541, 1551, ...).
-    basically dos 2.5, but
-        downgraded to a single drive and
-        using the same disk format as dos 2.1
-
-dos 2.7
-    in 8250 drives (double-sided)
-    new: super side sector, so REL files can use the whole disk. but as this is
-    incompatible with dos 2.5, support for sss can be switched on/off via m-w
-    command. so image files of this type may hold REL file with or without sss!
-dos 3.0
-    in D9060 and D9090 hard disks
-
-dos 3.0 (based on 2.6?)
-    in 1570 and 1571 drives (but format on disk is still "2A")
-    no super side sectors, so REL files are limited to 720 data blocks.
-dos 3.1
-    in 128 DCR (but format on disk is still "2A")
-
-dos 10 (is this based on 2.7?)
-    in 1581 drives (but format on disk is "3D")
-    uses super side sector (-> up to 126 groups of six side sectors),
-    so REL file can use whole disk.
-"""
