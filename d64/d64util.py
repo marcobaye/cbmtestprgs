@@ -47,6 +47,69 @@ _errorcodes_map = {
 _errorcodes_chars = "X.2s4c6789hi"  # characters for display (X=illegal, .=ok)
 
 ################################################################################
+# backend
+
+class imagefile(object):
+    """
+    This class acts as a common back-end for all the different formats. It only
+    handles reading blocks from the actual file and writing them back.
+    """
+    def __init__(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
+        self.fh = fh
+        self.body = body
+        self.readonly = readonly    # we don't really need to store this info in
+        self.writebackmode = writeback  # three vars, but it might make the code
+        self.writethroughmode = writethrough    # more readable.
+        self.need_writeback = False
+        # handle error codes separately
+        if has_error_block:
+            self.block_count, mustbezero = divmod(len(body), 257)
+        else:
+            self.block_count, mustbezero = divmod(len(body), 256)
+        if mustbezero:
+            sys.exit("BUG: illegal file size!")
+        self.errorblock = self.body[self.block_count * 256:]
+        self.body = self.body[:self.block_count * 256]
+
+    def has_error_block(self):
+        return bool(len(self.errorblock))
+
+    def read_block(self, lba):
+        offset = 256 * lba
+        block = self.body[offset:offset+256]
+        return block
+
+    def read_error(self, lba):
+        return self.errorblock[lba]
+
+    def write_block(self, lba):
+        offset = 256 * lba
+        self.body[offset:offset+256] = data # will crash in readonly mode!
+        if self.writebackmode:
+            self.need_writeback = True
+        else:
+            # writethrough mode
+            self.fh.seek(offset)
+            self.fh.write(data)
+            self.fh.flush()
+
+    def writeback(self):
+        """
+        If data has been changed, write to file.
+        """
+        if not self.writebackmode:
+            raise Exception("writeback was called outside of writeback mode")
+        if self.need_writeback:
+            _debug(1, "Flushing to disk.")
+            self.fh.seek(0)
+            self.fh.write(self.body)
+            self.fh.write(self.errorblock)
+            self.fh.flush()
+            self.need_writeback = False
+        else:
+            _debug(1, "Nothing changed, no need to flush to disk.")
+
+################################################################################
 # virtual base class
 
 # FIXME - make block-based access to image into a separate class, so 1541 class
@@ -80,16 +143,11 @@ class d64(object):
         if "blocks_total" not in self.__dir__():
             raise Exception("Only subclasses (1541, 1571, 1581, ...) can be instantiated!")
 
-    def _populate(self, fh, body, readonly, writeback, writethrough):
+    def _populate(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
         """
         Called after correct subclass has been instantiated.
         """
-        self.fh = fh
-        self.body = body
-        self.readonly = readonly    # we don't really need to store this info
-        self.writebackmode = writeback  # in three vars, but it might make
-        self.writethroughmode = writethrough    # the code more readable.
-        self.need_writeback = False
+        self.imagefile = imagefile(fh, body, readonly, writeback, writethrough, has_error_block=has_error_block)
         # build lookup tables for "sectors per track" and "blocks before track":
         self._sectors_of_track = {}
         self._blocks_before_track = {}
@@ -103,9 +161,6 @@ class d64(object):
         # sanity check:
         if self.blocks_total != lba:
             sys.exit("BUG: total number of blocks is inconsistent!")
-        # handle error codes separately
-        self.errorblock = self.body[lba * 256:]
-        self.body = self.body[:lba * 256]
         # display error block
         if _debuglevel >= 2:
             self._print_error_block()
@@ -159,9 +214,7 @@ class d64(object):
         """
         _debug(2, "Reading t%d s%d." % ts)
         self._check_ts(ts)
-        offset = 256 * self.ts_to_lba(ts)
-        block = self.body[offset:offset+256]
-        return block
+        return self.imagefile.read_block(self.ts_to_lba(ts))
 
     def write_ts(self, ts, data):
         """
@@ -171,43 +224,25 @@ class d64(object):
             raise Exception("block should be 256 bytes")
         _debug(2, "Writing t%d s%d." % ts)
         self._check_ts(ts)
-        offset = 256 * self.ts_to_lba(ts)
-        self.body[offset:offset+256] = data # will crash in readonly mode!
-        if self.writebackmode:
-            self.need_writeback = True
-        else:
-            # writethrough mode
-            self.fh.seek(offset)
-            self.fh.write(data)
-            self.fh.flush()
+        self.imagefile.write_block(self.ts_to_lba(ts))
 
     def writeback(self):
         """
         If data has been changed, write to file.
         """
-        if not self.writebackmode:
-            raise Exception("writeback was called outside of writeback mode")
-        if self.need_writeback:
-            _debug(1, "Flushing to disk.")
-            self.fh.seek(0)
-            self.fh.write(self.body)
-            self.fh.write(self.errorblock)
-            self.fh.flush()
-            self.need_writeback = False
-        else:
-            _debug(1, "Nothing changed, no need to flush to disk.")
+        self.imagefile.writeback()
 
     def _print_error_block(self):
         """
         Show contents of error block
         """
-        if self.errorblock:
+        if self.imagefile.has_error_block():
             print("Error block:")
             offset = 0
             for track in range(self.mintrack, self.maxtrack + 1):
                 out = "%3d: " % track
                 for sector in range(self.sectors_of_track(track)):
-                    code = self.errorblock[offset]
+                    code = self.imagefile.read_error(offset)
                     offset += 1
                     code = _errorcodes_map.get(code, 0) # 0 is invalid
                     char = _errorcodes_chars[code]
@@ -1229,7 +1264,7 @@ def DiskImage(filename, writeback=False, writethrough=False):
         else:
             raise Exception("Could not process " + filename + ": Image type not recognised")
     _debug(1, filename, "is a", obj.name, "disk image" + (" with error info." if error_info else "."))
-    obj._populate(fh=fh, body=body, readonly=readonly, writeback=writeback, writethrough=writethrough)
+    obj._populate(fh=fh, body=body, readonly=readonly, writeback=writeback, writethrough=writethrough, has_error_block=error_info)
     return obj
 
 ################################################################################
@@ -1254,6 +1289,8 @@ _petscii_lowercase = (
     "━ABCDEFGHIJKLMNOPQRSTUVWXYZ╋⡇┃▒▧" +
     " ▌▄▔▁▏▒▕⣤▨▊┣▗┗┓▂┏┻┳┫▎▍▋▆▅▃✓▖▝┛▘▒")     # copy of a0..be, for output only
 # CAUTION, these symbols need to be shown in reverse: "▊▋▆▅"
+ANSI_REVERSE = "\033[7m"
+ANSI_RVS_OFF = "\033[27m"
 
 def from_petscii(bindata, second_charset):
     """Helper fn to convert petscii bytes to something printable."""
@@ -1267,10 +1304,10 @@ def from_petscii(bindata, second_charset):
             b |= 64 # then replace
             revs = True # and reverse
         if revs:
-            ret += "\033[7m"    # ANSI reverse
+            ret += ANSI_REVERSE
         ret += charset[b]
         if revs:
-            ret += "\033[27m"   # ANSI revs off
+            ret += ANSI_RVS_OFF
     return ret
 
 def _quote(name16):
@@ -1286,10 +1323,9 @@ def show_directory(img, second_charset, full=False):
     Show directory of image file.
     """
     drive, name, id5 = img.read_header_fields()
-    qname = _quote(name)    # FIXME - disk name uses a different quoting rule, end quote is *after* 16 chars!
-    qname = from_petscii(qname, second_charset)
+    name = from_petscii(name, second_charset)
     id5 = from_petscii(id5, second_charset)
-    print('    ', drive, qname, id5)
+    print('    ', drive, ANSI_REVERSE+'"'+name+'"', id5+ANSI_RVS_OFF)
     nonempty = 0
     empty = 0
     blocks_total = 0    # for debug output
@@ -1315,7 +1351,11 @@ def show_directory(img, second_charset, full=False):
             line += " : "
             line += ts.hex(" ")
             line += " : "
-            line += misc.hex(" ")
+            if any(misc[4:]):
+                line += misc[:4].hex(" ")
+                line += " : yy%02d-%02d-%02d %02d:%02d" % (misc[4], misc[5], misc[6], misc[7], misc[8])
+            else:
+                line += misc.hex(" ")
         print(line)
         if filetype:
             blocks_total += blocks
