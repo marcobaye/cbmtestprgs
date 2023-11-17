@@ -112,9 +112,6 @@ class imagefile(object):
 ################################################################################
 # virtual base class
 
-# FIXME - make block-based access to image into a separate class, so 1541 class
-# can run on top of part of a CMD image.
-
 class d64(object):
     """
     This class describes a cbm disc image. There are subclasses for 1541,
@@ -687,6 +684,11 @@ class _dos2p1(d64):
 # 2031, 4031, 1540, 1541, 1551 and 1570 units.
 # file extension is mostly .d64, sometimes .d41
 
+# FIXME: add support for GEOS? header block holds t/s of border block and
+# a signature:
+#000165a0  a0 a0 44 46 a0 32 41 a0  a0 a0 a0 13 08 47 45 4f  |..DF.2A......GEO|
+#000165b0  53 20 66 6f 72 6d 61 74  20 56 31 2e 30 00 00 00  |S format V1.0...|
+
 class _1541(_dos2p1):
     name = "1541"
     blocks_total = 683
@@ -1254,11 +1256,8 @@ def DiskImage(filename, writeback=False, writethrough=False):
         img_type, error_info = _type_of_size[filesize]
         obj = img_type()
     else:
-        # FIXME: CMD FD docs give conflicting information:
-        # a) the size of native partitions can be chosen in 64K steps
-        # b) a DD disk can be partitioned to hold an 800K native partition
-        # if a) is true, we can check for "filesize & 65535 == 0" instead:
-        if (0 < filesize <= 255*256*256) and (filesize & 255 == 0):
+        # valid sizes of CMD native partitions are 1..255 * 64 KiB:
+        if (0 < filesize <= 0xff0000) and (filesize & 0xffff == 0):
             obj = _cmdnative(filesize)
             error_info = False
         else:
@@ -1353,7 +1352,7 @@ def show_directory(img, second_charset, full=False):
             line += " : "
             if any(misc[4:]):
                 line += misc[:4].hex(" ")
-                line += " : yy%02d-%02d-%02d %02d:%02d" % (misc[4], misc[5], misc[6], misc[7], misc[8])
+                line += " : %04d-%02d-%02d %02d:%02d" % (1900 + misc[4], misc[5], misc[6], misc[7], misc[8])
             else:
                 line += misc.hex(" ")
         print(line)
