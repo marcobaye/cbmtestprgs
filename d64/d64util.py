@@ -296,7 +296,7 @@ class d64(object):
             d[track] = freeblocks
             d["all"] += freeblocks
             if track == self.directory_ts[0]:
-                d["dir"] = freeblocks
+                d["reserved"] = freeblocks
             else:
                 d["shown"] += freeblocks
 
@@ -343,8 +343,8 @@ class d64(object):
     def read_free_blocks(self, alt_maxtrack=None):
         """
         Return dictionary of free blocks per track.
-        There are three additional keys, "shown", "dir" and "all", where
-        "shown" + "dir" == "all"
+        There are three additional keys, "shown", "reserved" and "all", where
+        "shown" + "reserved" == "all"
         """
         _debug(3, "Reading free blocks counters")
         startoffset, size, maxtracks = self.bam_start_size_maxperblock
@@ -523,6 +523,26 @@ class d64(object):
         # "track" is zero, so there is no next block
         if ts[1] != 255:
             print("WARNING: sector value of final dir block is %d instead of 255!" % ts[1], file=sys.stderr)
+
+    def cook_dir_entry(self, index, bin30):
+        """
+        Convert directory entry to what is shown to user
+        """
+        in_use = bin30[0] != 0
+        file_type = self.filetype(bin30[0])
+        ts = bin30[1:3]
+        file_name = bin30[3:19]
+        rel_stuff = bin30[19:22]    # side sector t/s, record length
+        unused = bin30[22:23]
+        date = bin30[23:26] # year since 1900, month, day
+        time = bin30[26:28] # hour, minute
+        block_count = int.from_bytes(bin30[28:30], "little")
+        optional = " : " + ts.hex(" ") + " : " + rel_stuff.hex(" ") + " " + unused.hex(" ") + " "
+        if all(date):
+            optional += ": %04d-%02d-%02d %02d:%02d" % (1900 + date[0], date[1], date[2], time[0], time[1])
+        else:
+            optional += (date + time).hex(" ")
+        return in_use, block_count, file_name, file_type, optional
 
     def write_directory(self, new_dir): # TODO: add flag for "accept oversized dirs and use other tracks"
         """
@@ -918,68 +938,97 @@ class _1571(_1541):
 ################################################################################
 # CBM DOS 3.0 was used in D9060 and D9090 hard disk units
 # shit, these things actually have a track zero!
+# first block (t0s0) seems to hold pointers to dir, header, bam:
+# 00000000  00 01 00 ff 4c 0a 4c 14  01 00 39 30 00 00 00 00  |....L.L...90....|
 
-class _d9090(_dos2p1):
-    name = "D9090"
-    blocks_total = 29376    # 29162 free -> track 0 is not counted though it is mostly free in BAM!
+# D9090: 20 bam blocks, one every 8 tracks, starting at t1s0
+# each contains 48 five-byte entries (counter byte and four bitmap bytes)
+# 48*32 -> 12*128 -> each bam block manages twelve tracks * 128 blocks.
+# 48*32 -> 8*192 -> each bam block manages eight tracks * 192 blocks.
+
+# 64er 1988-11 says:
+# "Nach Umrüstung [...] betragen die Speicherkapazitäten zwischen 2 mal 5 und 2 mal 16 MByte"
+# 2 logical drives (0 and 1) with 38884 BLOCKS FREE each.
+
+class _d90(_dos2p1):
     mintrack = 0
     maxtrack = 152
-    track_length_changes = {0: 192} # all tracks have 192 sectors
-    header_ts_and_offset = (76, 20), 6  # where to find diskname and five-byte "pseudo id" (FIXME: read from t0s0!)
-    # 20 bam blocks, one every 8 tracks, starting at t1s0
-    # each contains 48 five-byte entries (counter byte and four bitmap bytes)
-    # 48*32 -> 8*192 -> each bam block manages eight tracks * 192 blocks.
-    directory_ts = (76, 10) # FIXME: read from t0s0!
-    first_bam_ts = (1, 0)   # FIXME: read from t0s0!
+
+    def _populate(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
+        # first call parent class
+        super()._populate(fh, body, readonly, writeback, writethrough, has_error_block)
+        # then get parameters from t0s0:
+        t0s0 = self.read_ts((0, 0))
+        self.header_ts_and_offset = (t0s0[6], t0s0[7]), 6   # where to find diskname and five-byte "pseudo id"
+        self.directory_ts = (t0s0[4], t0s0[5])
+        self.first_bam_ts = (t0s0[8], t0s0[9])
 
     def check_bam_counters(self):
         _debug(1, "Checking " + self.name + " BAM for internal consistency")
         bam_ts = self.first_bam_ts
-        for track in range(self.mintrack, self.maxtrack+1):
-            entry = track & 7
-            if entry == 0:
+        entry = 48  # so we know when to fetch the next bam block
+        for cyl in range(self.mintrack, self.maxtrack+1):
+            if entry == 48:
                 bam_block = self.read_ts(bam_ts)
                 bam_ts = (bam_block[0], bam_block[1])
-            for part in range(6):
-                start = 16 + entry * 30 + part * 5
+                entry = 0
+            for head in range(self.heads):
+                start = 16 + entry * 5
                 total = bam_block[start]
                 sum = 0
                 for i in range(4):
                     sum += _popcount(bam_block[start + 1 + i])
                 if total == sum:
-                    _debug(9, "track %d, part %d: %d free blocks" % (track, part, sum))
+                    _debug(9, "cyl %d, head %d: %d free blocks" % (cyl, head, sum))
                 else:
-                    print("BAM error for track %d, part %d: counter says %d, bitfield says %d!" % (track, part, total, sum), file=sys.stderr)
+                    print("BAM error for cyl %d, head %d: counter says %d, bitfield says %d!" % (cyl, head, total, sum), file=sys.stderr)
+                entry += 1
 
     def read_free_blocks(self):
         _debug(3, "Reading free blocks counters")
         d = dict()
         d["all"] = 0
-        d["dir"] = 0
+        d["reserved"] = 0
         d["shown"] = 0
         bam_ts = self.first_bam_ts
-        for track in range(self.mintrack, self.maxtrack+1):
-            entry = track & 7
-            if entry == 0:
+        entry = 48  # so we know when to fetch the next bam block
+        for cyl in range(self.mintrack, self.maxtrack+1):
+            if entry == 48:
                 bam_block = self.read_ts(bam_ts)
                 bam_ts = (bam_block[0], bam_block[1])
+                entry = 0
             freeblocks = 0
-            for part in range(6):
-                start = 16 + entry * 30 + part * 5
+            for head in range(self.heads):
+                start = 16 + entry * 5
                 freeblocks += bam_block[start]
-            d[track] = freeblocks
+                entry += 1
+            d[cyl] = freeblocks
             d["all"] += freeblocks
-            if track:
+            if cyl:
                 d["shown"] += freeblocks
             else:
-                d["dir"] += freeblocks
+                d["reserved"] += freeblocks
         return d
 
     def release_blocks(self, set_of_ts):
-        raise Exception("releasing blocks not implemented for D9090!")
+        raise Exception("releasing blocks not implemented for D9060/D9090!")
 
     def try_to_allocate(self, track, sector, exact):
-        raise Exception("allocating blocks not implemented for D9090!")
+        raise Exception("allocating blocks not implemented for D9060/D9090!")
+
+class _d9060(_d90):
+    name = "D9060"
+    blocks_total = 19584    # 19442 free -> track 0 is not counted though it is mostly free in BAM!
+    # ...so 142 allocated, that's 128 (t0) + 2 (header + dir) + 12 (bam, but it should be 13, damn!)
+    heads = 4
+    track_length_changes = {0: 128} # all tracks have 32 sectors (times 4 heads -> 128)
+
+class _d9090(_d90):
+    name = "D9090"
+    blocks_total = 29376    # 29162 free -> track 0 is not counted though it is mostly free in BAM!
+    # ...so 214 allocated, that's 192 (t0) + 2 (header+dir) + 20 (bam)
+    heads = 6
+    track_length_changes = {0: 192} # all tracks have 32 sectors (times 6 heads -> 192)
 
 ################################################################################
 # CBM DOS 10.0 was used in 1581 units:
@@ -1089,8 +1138,8 @@ class _cmdnative(d64):
     def read_free_blocks(self):
         """
         Return dictionary of free blocks per track.
-        There are three additional keys, "shown", "dir" and "all", where
-        "shown" + "dir" == "all"
+        There are three additional keys, "shown", "reserved" and "all", where
+        "shown" + "reserved" == "all"
         """
         _debug(3, "Reading free blocks dict")
         if not self.bam_counters:
@@ -1103,7 +1152,7 @@ class _cmdnative(d64):
             sum += count
         reserved_area_sum = self.bam_counters["reserved_area"]
         d["all"] = sum
-        d["dir"] = reserved_area_sum
+        d["reserved"] = reserved_area_sum
         d["shown"] = sum - reserved_area_sum
         return d
 
@@ -1118,42 +1167,33 @@ class _cmdnative(d64):
 ################################################################################
 # disk formats of CMD HD/FD images (CMD called them "partitionable formats"):
 # this format started with the CMD HD and was also used in RAMLink and CMD FDs.
-# up to 254 partitions possible (31 for RAMLink and FDs).
+# up to 254 partitions possible on HD, 31 on RAMLink and FDs.
 # partitions are stored sequentially without any gaps, beginning with the
 # system partition. the system partition holds the DOS in case of HD and is
 # empty in case of FD.
 # 0 specifies the currently selected partition,
-# 1..254 specify partitions 1..254 (one of which is currently selected, and of
-#   which is selected per default after power-on)
+# 1..254 specify partitions 1..254 (one of which is the "currently selected
+#   partition" and one of which is selected per default after power-on)
 # 255 specifies the system partition (located first, so stored at offset 0)
 # FD formats:
-# file extension is .d1m, size is 829440
-# file extension is .d2m, size is 1658880
-# file extension is .d4m, size is 3317760
+#   file extension .d1m, size is 829440
+#   file extension .d2m, size is 1658880
+#   file extension .d4m, size is 3317760
 # all have 81 tracks, where track 81 holds the partition table
 # supported partition types are:
 #   0: not created
-#   1: native
-#   2: 1541emu  (takes 684 blocks, which is 1 too many!)
-#   3: 1571emu  (takes 1368 blocks, which is 2 too many!)
-#   4: 1581emu  (takes 3200 blocks, which is correct)
-#       -> so I guess each partition must start on a block divisible by four, maybe
-#       because d2m and d4m use 1024-byte hardware sectors.
-#       this matches CMD HD docs, because there 1541emu partitions take 684 blocks,
-#       but 1571emu partitions take 1366 blocks -> HD uses 512-byte blocks.
+#   1: native   (takes N * 256 blocks)
+#   2: 1541emu  (takes 684 blocks, see below why)
+#   3: 1571emu  (takes 1366 blocks on HD, 1368 on FD, see below why)
+#   4: 1581emu  (takes 3200 blocks)
+#       -> each partition must start on a hardware sector.
+#       HD uses 512-byte blocks, FD uses 1024-byte blocks, therefore sizes of
+#       1541- and 1571-emulation partitions are rounded up.
 # only supported by HD:
 #   5: 1581 CP/M emulation
 #   6: print buffer
 #   7: foreign mode
-# CAUTION, data in "partition directory" is partly bigendian:
-# last three bytes of entry are not "zero, numblocks low, numblocks high",
-# but "size high, size med, size low" where size is given in 512-byte blocks.
-# location on disk is given in the same format.
-# layout after name: start block (high/middle/low), 5 null bytes, size (high/middle/low)
-# TODO: fix display of partition directory:
-#   header line should be '255 "cmd fd          " fd 1h'    (may differ on harddisk and/or RAMLink)
-#   "number of blocks" should display partition number
-#   do not display any "blocks free" number (or maybe do, but use sensible data)
+# TODO: do not display any "blocks free" number (or maybe do, but use sensible data)
 # TODO: mark the default partition in the directory
 
 class _cmdpartitionable(d64):
@@ -1165,7 +1205,7 @@ class _cmdpartitionable(d64):
 
     # partition table does not really have header and id fields, so fake them:
     def read_header_fields(self):
-        return 255, b"CMD FD          ", b"FD 1H"
+        return 255, b"CMD FD          ", b"FD 1H"   # FIXME: fix for HD/RAMLink?
 
     def ts_to_lba(self, ts):
         # partition table uses "track 1" link pointers, so fake lba address accordingly:
@@ -1179,7 +1219,7 @@ class _cmdpartitionable(d64):
         for track in range(1, self.maxtrack + 1):
             d[track] = 0
         d["all"] = 0
-        d["dir"] = 0
+        d["reserved"] = 0
         d["shown"] = 0
         return d
 
@@ -1198,6 +1238,23 @@ class _cmdpartitionable(d64):
         else:
             t = b" 0X%2X" % filetype    # unsupported types are shown as hex
         return t
+
+    def cook_dir_entry(self, index, bin30):
+        """
+        Convert entry from partition directory to what is shown to user
+        """
+        in_use = bin30[0] != 0
+        partition_type = self.filetype(bin30[0])
+        unused1 = bin30[1:3]    # normally t/s
+        partition_name = bin30[3:19]
+        start_index = int.from_bytes(bin30[19:22], "big") * 512
+        unused2 = bin30[22:27]
+        size_bytes = int.from_bytes(bin30[27:30], "big") * 512
+        optional = " : " + unused1.hex(" ")
+        optional += " : %08x : " % start_index
+        optional += unused2.hex(" ")
+        optional += " : %08x " % size_bytes
+        return in_use, index, partition_name, partition_type, optional
 
 class _cmdfd1m(_cmdpartitionable):
     name = "CMD DD partitioned"
@@ -1313,9 +1370,8 @@ def _quote(name16):
     """
     Helper function to add opening and closing quotes at correct positions.
     """
-    name = b"\xa0" + name16 + b"\xa0"   # add shift-spaces before and after, then...
-    return name.replace(b"\xa0", b'"', 2)   # ...replacing the first two should do the trick.
-    # FIXME - I think the result may differ from CBM DOS if the initial name actually contains quotes.
+    name16 += b"\xa0"   # appending a shift-space and then replacing the first...
+    return b'"' + name16.replace(b"\xa0", b'"', 1)   # ...should do the trick.
 
 def show_directory(img, second_charset, full=False):
     """
@@ -1331,37 +1387,25 @@ def show_directory(img, second_charset, full=False):
     for entry in img.read_directory_entries(include_invisible=True):
         index = entry[0]
         bin30 = entry[1]
-        filetype = bin30[0]
-        if filetype:
+        in_use, line_number, name, type, optional = img.cook_dir_entry(index, bin30)
+        if in_use:
             nonempty += 1
         else:
             empty += 1
             if full == False:
                 continue
-        ts = bin30[1:3]
-        qname = _quote(bin30[3:19])
-        misc = bin30[19:28]  # ss track, ss sector, record length, 0, year, month, day, hour, minute
-        blocks = bin30[28:30]
-        blocks = int.from_bytes(blocks, "little")
-        line = ('%3d: ' % index) + str(blocks).ljust(4) + " "
-        line += from_petscii(qname, second_charset)
-        line += from_petscii(img.filetype(filetype), second_charset)
+        line = ('%3d: ' % index) + str(line_number).ljust(4) + " "
+        line += from_petscii(_quote(name), second_charset)
+        line += from_petscii(type, second_charset)
         if full:
-            line += " : "
-            line += ts.hex(" ")
-            line += " : "
-            if any(misc[4:]):
-                line += misc[:4].hex(" ")
-                line += " : %04d-%02d-%02d %02d:%02d" % (1900 + misc[4], misc[5], misc[6], misc[7], misc[8])
-            else:
-                line += misc.hex(" ")
+            line += optional
         print(line)
-        if filetype:
-            blocks_total += blocks
+        if in_use:
+            blocks_total += line_number
     freeblocks = img.read_free_blocks()
     #print(freeblocks)
     shown_free = freeblocks["shown"]
-    print("     %d blocks free (+%d in dir track)" % (shown_free, freeblocks["dir"]))
+    print("     %d blocks free (+%d reserved)" % (shown_free, freeblocks["reserved"]))
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
     #_debug(1, "%d + %d = %d" % (blocks_total, shown_free, blocks_total + shown_free))
 
