@@ -146,11 +146,11 @@ class d64(object):
         if "blocks_total" not in self.__dir__():
             raise Exception("Only subclasses (1541, 1571, 1581, ...) can be instantiated!")
 
-    def _populate(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
+    def _populate(self, imagefile):
         """
         Called after correct subclass has been instantiated.
         """
-        self.imagefile = imagefile(fh, body, readonly, writeback, writethrough, has_error_block=has_error_block)
+        self.imagefile = imagefile
         # build lookup tables for "sectors per track" and "blocks before track":
         self._sectors_of_track = {}
         self._blocks_before_track = {}
@@ -530,6 +530,17 @@ class d64(object):
         if ts[1] != 255:
             print("WARNING: sector value of final dir block is %d instead of 255!" % ts[1], file=sys.stderr)
 
+    def get_dir_entry(self, which):
+        """
+        Return a single dir entry, specified as index.
+        """
+        for entry in self.read_directory_entries(include_invisible=True):
+            if entry[0] == which:
+                return entry[1] # only return bin30 data
+            if entry[0] > which:
+                sys.exit("BUG: This cannot happen!")
+        sys.exit("Error: Specified directory index does not exist.")
+
     def cook_dir_entry(self, index, bin30):
         """
         Convert directory entry to what is shown to user
@@ -667,6 +678,15 @@ class d64(object):
             ret += b"0X%X" % ft # unsupported file types are shown as hex digit
         ret += b"<" if filetype & 64 else b" "
         return ret
+
+    def enter(self, which):
+        """
+        Enter partition or subdirectory.
+        This should work for 1581-style "CBM" partitions, for CMD-style partitions
+        and for subdirectories in CMD native partitions.
+        The partition/subdirectory is specified via its directory index.
+        """
+        sys.exit("Error: This image type does not support entering partitions/directories.")
 
 ################################################################################
 # CBM DOS 1.0 disk format, as used in CBM 2040 and CBM 3040 units.
@@ -966,9 +986,9 @@ class _d90(_dos2p1):
     mintrack = 0
     maxtrack = 152
 
-    def _populate(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
+    def _populate(self, imagefile):
         # first call parent class
-        super()._populate(fh, body, readonly, writeback, writethrough, has_error_block)
+        super()._populate(imagefile)
         # then get parameters from t0s0:
         t0s0 = self.read_ts((0, 0))
         self.header_ts_and_offset = (t0s0[6], t0s0[7]), 6   # where to find diskname and five-byte "pseudo id"
@@ -1063,10 +1083,6 @@ class _1581(d64):
     std_max_dir_entries = 296   # for writing directory
     std_directory_interleave = 1    # 1581 uses interleave 1 because of track cache
     std_file_interleave = 1 # 1581 uses interleave 1 because of track cache
-    # HACK for img partition on test/demo disk:
-    #header_ts_and_offset = (50, 0), 4
-    #bam_blocks = [(50, 1), (50, 2)]
-    #directory_ts = (50, 3)
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL", 5:b"CBM" }  # decoded file types
 
     def release_blocks(self, set_of_ts):
@@ -1092,6 +1108,27 @@ class _1581(d64):
         else:
             ts = self._try_to_allocate((track, sector), track - 41, (16, 6), (40, 2), (17, 6), exact=exact)
         return ts
+
+    def enter(self, which):
+        # enter 1581-style "CBM" partition
+        bin30 = self.get_dir_entry(which)
+        filetype = bin30[0] & 7
+        if filetype != 5:
+            sys.exit('Error: Chosen directory entry has type %d instead of 5 ("CBM")!' % filetype)
+        start_track = bin30[1]
+        start_sector = bin30[2]
+        if start_sector != 0:
+            sys.exit('Error: Chosen CBM partition starts at sector %d, not 0!' % start_sector)
+        block_count = int.from_bytes(bin30[28:30], "little")
+        if block_count < 120:
+            sys.exit('Error: Chosen CBM partition has a size of %d blocks (need at least 120 blocks)!' % block_count)
+        if block_count % 40:
+            sys.exit('Error: Chosen CBM partition has a size of %d blocks (not a multiple of 40)!' % block_count)
+        # ok, let's do it then
+        self.header_ts_and_offset = (start_track, start_sector), 4
+        self.bam_blocks = [(start_track, 1), (start_track, 2)]
+        self.directory_ts = (start_track, 3)
+        return self # we keep using this "1581" object
 
 ################################################################################
 # disk format of CMD native partitions
@@ -1176,6 +1213,19 @@ class _cmdnative(d64):
         # most significant bit goes first (which differs from all other formats):
         return sector >> 3, 128 >> (sector & 7)
 
+    def enter(self, which):
+        # enter CMD-style sub-directory
+        bin30 = self.get_dir_entry(which)
+        filetype = bin30[0] & 7
+        if filetype != 6:
+            sys.exit('Error: Chosen directory entry has type %d instead of 5 ("DIR")!' % filetype)
+        start_track = bin30[1]
+        start_sector = bin30[2]
+        # ok, let's do it then
+        self.header_ts_and_offset = (start_track, start_sector), 4
+        self.directory_ts = (start_track, start_sector + 1) # FIXME: add overflow check! or does CMD DOS make sure this does not happen?
+        return self # we keep using this "CMD native" object
+
 ################################################################################
 # disk formats of CMD HD/FD images (CMD called them "partitionable formats"):
 # this format started with the CMD HD and was also used in RAMLink and CMD FDs.
@@ -1215,9 +1265,9 @@ class _cmdpartitionable(d64):
     maxtrack = 81
     directory_ts = (1, 0)
 
-    def _populate(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
+    def _populate(self, imagefile):
         # first call parent class
-        super()._populate(fh, body, readonly, writeback, writethrough, has_error_block)
+        super()._populate(imagefile)
         # then set partition values so we can access partition directory
         self.imagefile.set_partition(self.partition)
 
@@ -1267,6 +1317,33 @@ class _cmdpartitionable(d64):
         optional += unused2.hex(" ")
         optional += " : %08x " % size_bytes
         return in_use, index, partition_name, partition_type, optional
+
+    def enter(self, which):
+        # enter one of the partitions
+        supported_types = {
+            1: _cmdnative,
+            2: _1541,
+            3: _1571,
+            4: _1581
+        }
+        bin30 = self.get_dir_entry(which)
+        partition_type = bin30[0]
+        if partition_type not in supported_types:
+            sys.exit('Error: Chosen directory entry has type %d instead of 1/2/3/4!' % partition_type)
+        chosen_type = supported_types[partition_type]
+        # ok, let's do it then
+        start_block = int.from_bytes(bin30[19:22], "big") * 2   # convert 512-byte sectors to 256-byte blocks
+        block_count = int.from_bytes(bin30[27:30], "big") * 2   # convert 512-byte sectors to 256-byte blocks
+        # create new handler object:
+        if chosen_type == _cmdnative:
+            new_obj = _cmdnative(block_count * 256)
+        else:
+            new_obj = chosen_type()
+        # set partition values so new handler works correctly:
+        self.imagefile.set_partition((start_block, block_count))
+        # pass "partition" to handler:
+        new_obj._populate(self.imagefile)
+        return new_obj  # tell caller to use the new handler
 
 class _cmdfd1m(_cmdpartitionable):
     name = "CMD DD partitioned"
@@ -1320,6 +1397,7 @@ def DiskImage(filename, writeback=False, writethrough=False):
     # FIXME - old version intercepted OSError! fix callers so they do that!
     if not readonly:
         body = bytearray(body)  # allow changes
+    # determine type of disk image file
     filesize = len(body)
     if filesize in _type_of_size:
         img_type, error_info = _type_of_size[filesize]
@@ -1332,7 +1410,9 @@ def DiskImage(filename, writeback=False, writethrough=False):
         else:
             raise Exception("Could not process " + filename + ": Image type not recognised")
     _debug(1, filename, "is a", obj.name, "disk image" + (" with error info." if error_info else "."))
-    obj._populate(fh=fh, body=body, readonly=readonly, writeback=writeback, writethrough=writethrough, has_error_block=error_info)
+    # FIXME: all the stuff above could be moved to imagefile.__init__(), right?
+    img = imagefile(fh, body, readonly, writeback, writethrough, has_error_block=error_info)    # create image file object...
+    obj._populate(img)  # ...and pass to dos/drive object
     return obj
 
 ################################################################################
@@ -1475,7 +1555,9 @@ def extract_all(img, full=False):
         else:
             extract_block_chain(img, ts, outname)
 
-def _process_file(file, second_charset, extract=False, full=False):
+def _process_file(file, second_charset, extract=False, full=False, path=None):
+    if path == None:
+        path = []
     try:
         img = DiskImage(file)
     except OSError as e:
@@ -1484,11 +1566,29 @@ def _process_file(file, second_charset, extract=False, full=False):
     except Exception as e:
         print(e, "\n", file=sys.stderr)
         return
+    while path:
+        component = path.pop(0)
+        img = img.enter(component)
     img.check_bam_counters()    # TODO: add cli arg(s) to enable/disable this
     if extract:
         extract_all(img, full=full)
     else:
         show_directory(img, second_charset, full=full)
+
+def process_path(path):
+    if not path:
+        return []
+    ret = []
+    try:
+        parts = path.split("/")
+        for p in parts:
+            num = int(p)
+            if num < 0:
+                sys.exit("Error: Path must be given as slash-separated, non-negative integers.")
+            ret.append(num)
+    except Exception:
+        sys.exit("Error: Path must be given as slash-separated integers.")
+    return ret
 
 def _main():
     global _debuglevel
@@ -1501,6 +1601,7 @@ If run directly, the directory of the given file(s) is displayed.
 """)
     parser.add_argument("-c", "--charset", action="store_true", help="use the other charset")
     parser.add_argument("-d", "--debug", action="count", default=0, help="increase debugging output")
+    parser.add_argument("-e", "--enter", metavar="PATH", type=str, help="enter partition/directory/...")
     parser.add_argument("-f", "--full", action="store_true", help="show hidden data as well")
     parser.add_argument("-l", "--list", action="store_true", help="list supported formats")
     parser.add_argument("-x", "--extract", action="store_true", help="extract all files to current directory")
@@ -1509,8 +1610,9 @@ If run directly, the directory of the given file(s) is displayed.
     _debuglevel += args.debug
     if args.list:
         list_formats()
+    path = process_path(args.enter)
     for file in args.files:
-        _process_file(file, args.charset, extract=args.extract, full=args.full)
+        _process_file(file, args.charset, extract=args.extract, full=args.full, path=path[:])
 
 if __name__ == "__main__":
     _main()

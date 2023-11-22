@@ -1,0 +1,4 @@
+
+maybe add a way to enter a disk image inside a disk image? needed?
+
+some form of format() or mkfs() call?
