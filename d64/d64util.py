@@ -70,20 +70,26 @@ class imagefile(object):
             sys.exit("BUG: illegal file size!")
         self.errorblock = self.body[self.block_count * 256:]
         self.body = self.body[:self.block_count * 256]
+        # for accessing partitions:
+        self.partition_start = 0
+        self.partition_size = self.block_count
+
+    def set_partition(self, start_and_size):
+        self.partition_start, self.partition_size = start_and_size
 
     def has_error_block(self):
         return bool(len(self.errorblock))
 
     def read_block(self, lba):
-        offset = 256 * lba
+        offset = 256 * (self.partition_start + lba)
         block = self.body[offset:offset+256]
         return block
 
     def read_error(self, lba):
-        return self.errorblock[lba]
+        return self.errorblock[self.partition_start + lba]
 
     def write_block(self, lba):
-        offset = 256 * lba
+        offset = 256 * (self.partition_start + lba)
         self.body[offset:offset+256] = data # will crash in readonly mode!
         if self.writebackmode:
             self.need_writeback = True
@@ -741,6 +747,7 @@ class _1541(_dos2p1):
 # may have been been used in 8250 units, therefore REL files on a dos 2.5
 # disk may use the dos 2.7 format, i.e. with a super side sector - beware!
 # file extension is .d80
+# header block links to first bam block, last bam block links to first dir block.
 
 class _8050(_dos2p1):
     name = "8050"
@@ -875,6 +882,7 @@ class _40track(_1541):
 # to double-sided discs (-> 1328 blocks free), but:
 # - on disc the format is still called "2A"
 # - there are no super side sectors, so REL files are limited to 720 data blocks.
+# - t53 (t18 on second side) is allocated completely, though only t53s0 is used.
 # file extension is .d71 or .d64
 
 class _1571(_1541):
@@ -907,6 +915,8 @@ class _1571(_1541):
         d = super().read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
         # ...and now add second side:
         self._fill_free_blocks_dict(d, (18, 0), 221, 1, 35, 36)
+        # tested on real hw: if t53 is freed, its blocks are included in "BLOCKS FREE"
+        # (but then VALIDATE will fail with "71, dir error, 53, 55", so don't do that).
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
 
@@ -938,7 +948,7 @@ class _1571(_1541):
 ################################################################################
 # CBM DOS 3.0 was used in D9060 and D9090 hard disk units
 # shit, these things actually have a track zero!
-# first block (t0s0) seems to hold pointers to dir, header, bam:
+# first block (t0s0) seems to hold pointers to dir, header, bam and then ID:
 # 00000000  00 01 00 ff 4c 0a 4c 14  01 00 39 30 00 00 00 00  |....L.L...90....|
 
 # D9090: 20 bam blocks, one every 8 tracks, starting at t1s0
@@ -948,7 +958,9 @@ class _1571(_1541):
 
 # 64er 1988-11 says:
 # "Nach Umrüstung [...] betragen die Speicherkapazitäten zwischen 2 mal 5 und 2 mal 16 MByte"
-# 2 logical drives (0 and 1) with 38884 BLOCKS FREE each.
+# picture shows:
+# 2 logical drives (0 and 1), each with "38884 BLOCKS FREE".
+# ...those could be: 8 heads, 256 blocks per cylinder, 153 tracks, 39168 blocks total
 
 class _d90(_dos2p1):
     mintrack = 0
@@ -1018,15 +1030,15 @@ class _d90(_dos2p1):
 
 class _d9060(_d90):
     name = "D9060"
-    blocks_total = 19584    # 19442 free -> track 0 is not counted though it is mostly free in BAM!
-    # ...so 142 allocated, that's 128 (t0) + 2 (header + dir) + 12 (bam, but it should be 13, damn!)
+    blocks_total = 19584    # 19441 free -> track 0 is not counted though it is mostly free in BAM!
+    # ...so 143 allocated, that's 128 (t0) + 2 (header + dir) + 13 (bam)
     heads = 4
     track_length_changes = {0: 128} # all tracks have 32 sectors (times 4 heads -> 128)
 
 class _d9090(_d90):
     name = "D9090"
     blocks_total = 29376    # 29162 free -> track 0 is not counted though it is mostly free in BAM!
-    # ...so 214 allocated, that's 192 (t0) + 2 (header+dir) + 20 (bam)
+    # ...so 214 allocated, that's 192 (t0) + 2 (header + dir) + 20 (bam)
     heads = 6
     track_length_changes = {0: 192} # all tracks have 32 sectors (times 6 heads -> 192)
 
@@ -1203,15 +1215,15 @@ class _cmdpartitionable(d64):
     maxtrack = 81
     directory_ts = (1, 0)
 
+    def _populate(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
+        # first call parent class
+        super()._populate(fh, body, readonly, writeback, writethrough, has_error_block)
+        # then set partition values so we can access partition directory
+        self.imagefile.set_partition(self.partition)
+
     # partition table does not really have header and id fields, so fake them:
     def read_header_fields(self):
         return 255, b"CMD FD          ", b"FD 1H"   # FIXME: fix for HD/RAMLink?
-
-    def ts_to_lba(self, ts):
-        # partition table uses "track 1" link pointers, so fake lba address accordingly:
-        self._check_ts(ts)
-        track, sector = ts
-        return self.parttable_block_offset + sector
 
     def read_free_blocks(self):
         # just use all zero for now:
@@ -1259,26 +1271,26 @@ class _cmdpartitionable(d64):
 class _cmdfd1m(_cmdpartitionable):
     name = "CMD DD partitioned"
     blocks_total = 3240
-    track_length_changes = {1: 40}  # all tracks have 40 sectors
-    parttable_block_offset = 80 * 40 + 8
+    track_length_changes = {1: 40}  # all tracks have 40 blocks (2 sides * 5 sectors * 1024 byte)
+    partition = (80 * 40 + 8, 4)
 
 class _cmdfd2m(_cmdpartitionable):
     name = "CMD FD-2000 partitioned"
     blocks_total = 6480
-    track_length_changes = {1: 80}  # all tracks have 80 sectors
-    parttable_block_offset = 80 * 80 + 8
+    track_length_changes = {1: 80}  # all tracks have 80 blocks (2 sides * 10 sectors * 1024 byte)
+    partition = (80 * 80 + 8, 4)
 
 class _cmdfd4m(_cmdpartitionable):
     name = "CMD FD-4000 partitioned"
     blocks_total = 12960
-    track_length_changes = {1: 160} # all tracks have 160 sectors
-    parttable_block_offset = 80 * 160 + 8
+    track_length_changes = {1: 160} # all tracks have 160 blocks (2 sides * 20 sectors * 1024 byte)
+    partition = (80 * 160 + 8, 4)
 
 ################################################################################
 # wrapper stuff
 
 # collect supported sizes and largest of them so files can be identified
-_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _d9090, _cmdnative, _cmdfd1m, _cmdfd2m, _cmdfd4m)
+_supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _d9060, _d9090, _cmdnative, _cmdfd1m, _cmdfd2m, _cmdfd4m)
 _type_of_size = dict()
 for imgtype in _supported:
     _type_of_size[imgtype.blocks_total * 256] = (imgtype, False)    # no error info
