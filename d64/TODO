@@ -1,4 +1,13 @@
 
+
 maybe add a way to enter a disk image inside a disk image? needed?
 
+
 some form of format() or mkfs() call?
+
+
+_IMGMODE_READONLY = 0       # trying to write raises Exceptions
+_IMGMODE_RAM = 1            # changes are made in RAM only
+_IMGMODE_WRITEBACK = 2      # flush changes to file by calling writeback()
+_IMGMODE_WRITETHROUGH = 3   # all changes are written to file immediately
+...or maybe better "from enum import Enum"!

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-for accessing commodore disc image files
+A simple library for accessing Commodore disc image files.
 """
 import argparse
 import sys  # for sys.stderr and sys.exit
 
 # this library accepts disk images with error info, but atm does not honor it!
 # TODO: honor error info
-# TODO: allow "ts tuple" and "lba number" to be used interchangeably
 
 _debuglevel = 1
 
@@ -1437,8 +1436,8 @@ _petscii_lowercase = (
     "━ABCDEFGHIJKLMNOPQRSTUVWXYZ╋⡇┃▒▧" +
     " ▌▄▔▁▏▒▕⣤▨▊┣▗┗┓▂┏┻┳┫▎▍▋▆▅▃✓▖▝┛▘▒")     # copy of a0..be, for output only
 # CAUTION, these symbols need to be shown in reverse: "▊▋▆▅"
-ANSI_REVERSE = "\033[7m"
-ANSI_RVS_OFF = "\033[27m"
+_ANSI_REVERSE = "\033[7m"
+_ANSI_RVS_OFF = "\033[27m"
 
 def from_petscii(bindata, second_charset):
     """Helper fn to convert petscii bytes to something printable."""
@@ -1452,10 +1451,10 @@ def from_petscii(bindata, second_charset):
             b |= 64 # then replace
             revs = True # and reverse
         if revs:
-            ret += ANSI_REVERSE
+            ret += _ANSI_REVERSE
         ret += charset[b]
         if revs:
-            ret += ANSI_RVS_OFF
+            ret += _ANSI_RVS_OFF
     return ret
 
 def _quote(name16):
@@ -1472,7 +1471,7 @@ def show_directory(img, second_charset, full=False):
     drive, name, id5 = img.read_header_fields()
     name = from_petscii(name, second_charset)
     id5 = from_petscii(id5, second_charset)
-    print('    ', drive, ANSI_REVERSE+'"'+name+'"', id5+ANSI_RVS_OFF)
+    print('    ', drive, _ANSI_REVERSE + '"' + name + '"', id5 + _ANSI_RVS_OFF)
     nonempty = 0
     empty = 0
     blocks_total = 0    # for debug output
