@@ -21,7 +21,7 @@ def apply_dir_art(art, targetdisk, targetskip, use_all_art, add_spacer):
     Do the actual merge of original directory and dir art.
     """
     # open image in writeback mode so it does not get clobbered on error:
-    img = d64util.DiskImage(targetdisk, writeback=True)
+    img = d64util.DiskImage(targetdisk, d64util.ImgMode.WRITEBACK)
     # get current directory contents
     olddir = []
     for entry in img.read_directory_entries(include_invisible=False):

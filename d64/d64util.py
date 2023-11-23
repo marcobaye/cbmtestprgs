@@ -4,6 +4,7 @@ A simple library for accessing Commodore disc image files.
 """
 import argparse
 import sys  # for sys.stderr and sys.exit
+import enum
 
 # this library accepts disk images with error info, but atm does not honor it!
 # TODO: honor error info
@@ -48,17 +49,38 @@ _errorcodes_chars = "X.2s4c6789hi"  # characters for display (X=illegal, .=ok)
 ################################################################################
 # backend
 
+class ImgMode(enum.Enum):
+    """
+    This class defines enum constants to set the "caching mode" of an image file:
+        READONLY:
+            any attempt to write raises an Exception.
+        WRITEBACK:
+            changes are in RAM only, calling writeback() flushes them to file.
+        DETACHED:
+            changes are in RAM only, calling writeback() raises an Exception.
+        DRYRUN:
+            changes are in RAM only, calling writeback() does nothing.
+        WRITETHROUGH:
+            all changes are flushed to file immediately.
+    """
+    READONLY = enum.auto()
+    WRITEBACK = enum.auto()
+    WRITETHROUGH = enum.auto()
+    DETACHED = enum.auto()
+    DRYRUN = enum.auto()
+
 class imagefile(object):
     """
     This class acts as a common back-end for all the different formats. It only
     handles reading blocks from the actual file and writing them back.
     """
-    def __init__(self, fh, body, readonly, writeback, writethrough, has_error_block=False):
+    def __init__(self, fh, body, img_mode, has_error_block=False):
         self.fh = fh
         self.body = body
-        self.readonly = readonly    # we don't really need to store this info in
-        self.writebackmode = writeback  # three vars, but it might make the code
-        self.writethroughmode = writethrough    # more readable.
+        if type(img_mode) == ImgMode:
+            self.img_mode = img_mode
+        else:
+            raise Exception("Invalid ImgMode!")
         self.need_writeback = False
         # handle error codes separately
         if has_error_block:
@@ -87,32 +109,48 @@ class imagefile(object):
     def read_error(self, lba):
         return self.errorblock[self.partition_start + lba]
 
-    def write_block(self, lba):
+    def write_block(self, lba, data):
         offset = 256 * (self.partition_start + lba)
-        self.body[offset:offset+256] = data # will crash in readonly mode!
-        if self.writebackmode:
+        self.body[offset:offset+256] = data
+        if self.img_mode == ImgMode.READONLY:
+            raise Exception("Tried to write in readonly mode.")
+        elif self.img_mode == ImgMode.WRITEBACK:
             self.need_writeback = True
-        else:
-            # writethrough mode
+        elif self.img_mode == ImgMode.DETACHED:
+            pass
+        elif self.img_mode == ImgMode.DRYRUN:
+            pass
+        elif self.img_mode == ImgMode.WRITETHROUGH:
             self.fh.seek(offset)
             self.fh.write(data)
             self.fh.flush()
+        else:
+            sys.exit("BUG: invalid image mode")
 
     def writeback(self):
         """
         If data has been changed, write to file.
         """
-        if not self.writebackmode:
-            raise Exception("writeback was called outside of writeback mode")
-        if self.need_writeback:
-            _debug(1, "Flushing to disk.")
-            self.fh.seek(0)
-            self.fh.write(self.body)
-            self.fh.write(self.errorblock)
-            self.fh.flush()
-            self.need_writeback = False
+        if self.img_mode == ImgMode.READONLY:
+            raise Exception("Called writeback() in readonly mode.")
+        elif self.img_mode == ImgMode.WRITEBACK:
+            if self.need_writeback:
+                _debug(1, "Flushing to disk.")
+                self.fh.seek(0)
+                self.fh.write(self.body)
+                self.fh.write(self.errorblock)
+                self.fh.flush()
+                self.need_writeback = False
+            else:
+                _debug(1, "Nothing changed, no need to flush to disk.")
+        elif self.img_mode == ImgMode.DETACHED:
+            raise Exception("Called writeback() in detached mode.")
+        elif self.img_mode == ImgMode.DRYRUN:
+            pass
+        elif self.img_mode == ImgMode.WRITETHROUGH:
+            raise Exception("Called writeback() in writethrough mode.")
         else:
-            _debug(1, "Nothing changed, no need to flush to disk.")
+            sys.exit("BUG: invalid image mode")
 
 ################################################################################
 # virtual base class
@@ -226,7 +264,7 @@ class d64(object):
             raise Exception("block should be 256 bytes")
         _debug(2, "Writing t%d s%d." % ts)
         self._check_ts(ts)
-        self.imagefile.write_block(self.ts_to_lba(ts))
+        self.imagefile.write_block(self.ts_to_lba(ts), data)
 
     def writeback(self):
         """
@@ -1378,24 +1416,18 @@ def list_formats():
     for type in _supported:
         print(type.name)
 
-def DiskImage(filename, writeback=False, writethrough=False):
+def DiskImage(filename, img_mode = ImgMode.READONLY):
     """
     Identify disk image file and return as d64 object.
-    'writeback' and 'writethrough' are mutually exclusive.
-    If neither is true, data is read-only.
-    If 'writeback' mode is selected, you need to call writeback() to flush
+    If img_mode is 'ImgMode.WRITEBACK', you need to call writeback() to flush
     changes to file.
     """
-    if writeback and writethrough:
-        raise Exception("writeback and writethrough are mutually exclusive")
-    readonly = not (writeback or writethrough)
     # open file and read data
-    mode = "rb" if readonly else "r+b"
+    mode = "r+b" if img_mode in (ImgMode.WRITEBACK, ImgMode.WRITETHROUGH) else "rb"
     fh = open(filename, mode)
     body = fh.read(_largest_size + 1)   # 1 more than largest supported type
     # FIXME - old version intercepted OSError! fix callers so they do that!
-    if not readonly:
-        body = bytearray(body)  # allow changes
+    body = bytearray(body)  # allow changes
     # determine type of disk image file
     filesize = len(body)
     if filesize in _type_of_size:
@@ -1410,7 +1442,7 @@ def DiskImage(filename, writeback=False, writethrough=False):
             raise Exception("Could not process " + filename + ": Image type not recognised")
     _debug(1, filename, "is a", obj.name, "disk image" + (" with error info." if error_info else "."))
     # FIXME: all the stuff above could be moved to imagefile.__init__(), right?
-    img = imagefile(fh, body, readonly, writeback, writethrough, has_error_block=error_info)    # create image file object...
+    img = imagefile(fh, body, img_mode, has_error_block=error_info) # create image file object...
     obj._populate(img)  # ...and pass to dos/drive object
     return obj
 
