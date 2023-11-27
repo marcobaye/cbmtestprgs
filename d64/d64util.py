@@ -7,7 +7,6 @@ import sys  # for sys.stderr and sys.exit
 import enum
 
 # this library accepts disk images with error info, but atm does not honor it!
-# TODO: honor error info
 
 _debuglevel = 1
 
@@ -183,6 +182,7 @@ class d64(object):
         if "blocks_total" not in self.__dir__():
             raise Exception("Only subclasses (1541, 1571, 1581, ...) can be instantiated!")
 
+    # TODO: fix code so all this stuff can be moved to __init__()!
     def _populate(self, imagefile):
         """
         Called after correct subclass has been instantiated.
@@ -719,18 +719,19 @@ class d64(object):
     def enter(self, which):
         """
         Enter partition or subdirectory.
-        This should work for 1581-style "CBM" partitions, for CMD-style partitions
+        This works for 1581-style "CBM" partitions, for CMD-style partitions
         and for subdirectories in CMD native partitions.
         The partition/subdirectory is specified via its directory index.
         """
         sys.exit("Error: This image type does not support entering partitions/directories.")
 
 ################################################################################
-# CBM DOS 1.0 disk format, as used in CBM 2040 and CBM 3040 units.
-# tracks 18..24 have 20 sectors -> out of spec?
+# CBM DOS 1.0 disk format, as used in non-upgraded CBM 2040 and CBM 3040 units.
+# tracks 18..24 have 20 sectors, which is a very tight fit.
 # 690 blocks total, 670 free, 152 dir entries.
 # no REL files.
 # file extension is .d67 (at least in VICE)
+# t18s0, offset 2: 0x01 (-> format 1)
 
 class _dos1(d64):
     name = "2040/3040 (DOS 1.0)"
@@ -748,16 +749,17 @@ class _dos1(d64):
 
 ################################################################################
 # CBM DOS 2.1 was used in CBM 4040 units and in upgraded 2040/3040 units.
-# tracks 18..24 had 19 sectors, so no longer out of spec.
+# tracks 18..24 have 19 sectors, which is more robust.
 # 683 blocks total, 664 free, 144 dir entries.
 # new: REL files and @SAVE
+# t18s0, offset 2: 0x41 0x00 (-> format "A"), directory says "2A"
 
 class _dos2p1(d64):
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL" }    # decoded file types
     # this class does not contain anything else because the disk format is the
     # same as the one that was later used by 1541 and friends, so see below.
     # the only reason for this class is so both "1541" and "8050" can inherit
-    # the REL file definition...
+    # the REL file definition.
 
 ################################################################################
 # CBM DOS 2.6 was a merger of 2.1 and 2.5 (see below): basically it was a
@@ -766,6 +768,7 @@ class _dos2p1(d64):
 # so the same disk format was used in CBM 4040 units, upgraded 2040/3040 units,
 # 2031, 4031, 1540, 1541, 1551 and 1570 units.
 # file extension is mostly .d64, sometimes .d41
+# t18s0, offset 2: 0x41 0x00 (-> format "A"), directory says "2A"
 
 # FIXME: add support for GEOS? header block holds t/s of border block and
 # a signature:
@@ -798,6 +801,18 @@ class _1541(_dos2p1):
         return self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)
 
 ################################################################################
+# info taken from: http://mhv.bplaced.net/diskettenformate.html
+# there was a "CBM 2030" disk drive unit that used disk format "2B".
+# it had the same number of tracks, but fewer sectors per track than "2A".
+# unknown, but likely: t18s0, offset 2: 0x42 0x00 (-> format "B"), directory says "2B"
+
+class _2030(_1541):
+    name = "2030"
+    #blocks_total = about 610? with about 590 free?
+    #track_length_changes = {1: 19, ..., ...: 15}
+    #std_max_dir_entries =
+
+################################################################################
 # CBM DOS 2.5 was used in CBM 8050 units.
 # new: disk changes were automatically detected
 # REL files were still limited to 720 data blocks (180 kB), but these disks
@@ -805,6 +820,7 @@ class _1541(_dos2p1):
 # disk may use the dos 2.7 format, i.e. with a super side sector - beware!
 # file extension is .d80
 # header block links to first bam block, last bam block links to first dir block.
+# t39s0, offset 2: 0x43 0x00 (-> format "C"), directory says "2C"
 
 class _8050(_dos2p1):
     name = "8050"
@@ -850,6 +866,8 @@ class _8050(_dos2p1):
 # incompatible with CBM DOS 2.5, support for sss can be switched on/off via M-W
 # command. so image files of this type may hold REL file with or without sss!
 # file extension is .d82
+# t39s0, offset 2: 0x43 0x00 (-> format "C"), directory says "2C"
+# the "double-sidedness" may have been deduced from the bam blocks (number and content).
 
 class _8250(_8050):
     name = "8250"
@@ -903,6 +921,13 @@ class _8250(_8050):
 ################################################################################
 # disk format of 1541-with-40-tracks-support
 # file extension is mostly .d64, sometimes .d41
+#
+# AFAIK there are two different ways to store the additional 5*4 BAM bytes,
+# either at the start or at the end of the unused part of t18s0:
+#   SpeedDOS uses offset 192,
+#   DolphinDOS uses offset 236?
+# t18s0, offset 2: 0x41 0x00 (-> format "A"), directory says "2A"
+# TODO: is there a way to recognize this format, short of trying to access tracks 36..40?
 
 class _40track(_1541):
     name = "40-track 1541"
@@ -912,17 +937,16 @@ class _40track(_1541):
     def check_bam_counters(self):
         super().check_bam_counters(alt_maxtrack=35) # let 1541 class check the first side...
         # ...and now check extra tracks:
-        print("FIXME: Checking BAM counters of tracks 36..40 is not implemented.")
-        # TODO
-        # AFAIK there are two different ways to store the additional 5*4 bytes,
-        # either at the start or at the end of the "unused" part of t18s0.
+        print("FIXME: Checking BAM counters of tracks 36..40 is not implemented.")  # TODO
+        # TODO: we could check both alternatives (SpeedDOS and Dolphin) and if
+        # only one of those is valid, consider that a successful format
+        # detection. The problem is: "all zeroes" is a valid pattern in any
+        # case, it would mean "all blocks are allocated".
 
     def read_free_blocks(self):
         d = super().read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
         # ...and now add extra tracks:
-        # TODO
-        # AFAIK there are two different ways to store the additional 5*4 bytes,
-        # either at the start or at the end of the "unused" part of t18s0.
+        print("FIXME: Checking BAM counters of tracks 36..40 is not implemented.")  # TODO
         #self._fill_free_blocks_dict(d, (18, 0), FIXME, 4, 5, 36)
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
@@ -930,17 +954,20 @@ class _40track(_1541):
     def try_to_allocate(self, track, sector, exact):
         if track <= 35:
             return super().try_to_allocate(track, sector, exact)   # just call 1541 method
-        # AFAIK there are two different ways to store the additional 5*4 bytes,
-        # either at the start or at the end of the "unused" part of t18s0.
-        raise Exception("Allocation of tracks 36..40 is not yet supported!")
+        raise Exception("Allocation of tracks 36..40 is not yet supported!")    # TODO
 
 ################################################################################
 # CBM DOS 3.0 in 1571 units and CBM DOS 3.1 in C128 DCRs extended the 1541 format
 # to double-sided discs (-> 1328 blocks free), but:
-# - on disc the format is still called "2A"
+# - on disc the format is still called "2A".
 # - there are no super side sectors, so REL files are limited to 720 data blocks.
+# - the BAM for the second side is split:
+#       counters are at end of t18s0, bitmaps are at start of t53s0.
 # - t53 (t18 on second side) is allocated completely, though only t53s0 is used.
+# (this "DOS 3" has nothing to do with the "DOS 3" used in D9060/D9090 hard disks)
 # file extension is .d71 or .d64
+# t18s0, offset 2: 0x41 0x80 (-> format "A" and flag bit), directory says "2A"
+# the "0x80" above is the flag that signals "this disk is double-sided".
 
 class _1571(_1541):
     name = "1571"
@@ -1004,9 +1031,14 @@ class _1571(_1541):
 
 ################################################################################
 # CBM DOS 3.0 was used in D9060 and D9090 hard disk units
+# (this "DOS 3" has nothing to do with the "DOS 3" used in 1570/1571 units)
 # shit, these things actually have a track zero!
-# first block (t0s0) seems to hold pointers to dir, header, bam and then ID:
+# first block (t0s0) seems to hold
+#   pointers to bad sector list, dir, header, bam
+#   and then ID:
 # 00000000  00 01 00 ff 4c 0a 4c 14  01 00 39 30 00 00 00 00  |....L.L...90....|
+# the directory says "3A", and there does not seem to be a format indicator at
+# the start of the header block (...also not really needed with hard disks)
 
 # D9090: 20 bam blocks, one every 8 tracks, starting at t1s0
 # each contains 48 five-byte entries (counter byte and four bitmap bytes)
@@ -1100,13 +1132,24 @@ class _d9090(_d90):
     track_length_changes = {0: 192} # all tracks have 32 sectors (times 6 heads -> 192)
 
 ################################################################################
+# CBM DOS 7.0 was used in 8061 and 8062 units (dual 8-inch floppy disk drives)
+# docs say:
+# tracks start at 0(!), sectors start at 1(!)
+# t0s1 holds "volume label" with pointers to bad sector list, bam, directory.
+# first byte holds sector number(!), "actually head *and* sector number",
+# 0xff means "end of list",
+# second byte holds track number or points to last byte used in block.
+# ...so it is a lot like the hard disk format, except for the track/sector confusion.
+# single-sided format uses 3 bam blocks, double-sided uses 6.
+
+################################################################################
 # CBM DOS 10.0 was used in 1581 units:
-# - on disc the format is called "3D".
 # - it knows about super side sectors, so REL files can use the whole disk.
 # new filetype: "CBM" for a sequence of consecutive blocks
 # file extension is .d81 or .d64
 # TODO: display the "1581 autoboot" flag from the header block as debug info with the directory?
 #   (that is bit 6 of byte 7 in t40s1 and t40s2)
+# t40s0, offset 2: 0x44 0x00 (-> format "D"), directory says "3D"
 
 class _1581(d64):
     name = "1581"
@@ -1173,6 +1216,7 @@ class _1581(d64):
 # file extension is .dnp
 # TODO: display the "native autoboot" flag (byte 7 of t1s2) as debug info with the directory?
 # TODO: read and check "track number of last available track in partition" (byte 8 of t1s2)
+# t1s1, offset 2: 0x48 0x00 (-> format "H"), directory says "1H"
 
 class _cmdnative(d64):
     name = "CMD native"
@@ -1310,7 +1354,9 @@ class _cmdpartitionable(d64):
 
     # partition table does not really have header and id fields, so fake them:
     def read_header_fields(self):
-        return 255, b"CMD FD          ", b"FD 1H"   # FIXME: fix for HD/RAMLink?
+        return 255, b"CMD FD          ", b"FD 1H"   # FD
+#       return 255, b"CMD HD          ", b"HD 1H"   # HD
+        #FIXME: fix for RAMLink?
 
     def read_free_blocks(self):
         # just use all zero for now:
@@ -1403,7 +1449,10 @@ class _cmdfd4m(_cmdpartitionable):
 ################################################################################
 # wrapper stuff
 
-# collect supported sizes and largest of them so files can be identified
+# collect supported sizes so files can be identified.
+# cmd native has a block count of -1 because its size is dynamic. so it cannot
+# be identified by file size, but we still need it in this list so it is shown
+# by list_formats().
 _supported = (_dos1, _1541, _40track, _1571, _1581, _8050, _8250, _d9060, _d9090, _cmdnative, _cmdfd1m, _cmdfd2m, _cmdfd4m)
 _type_of_size = dict()
 for imgtype in _supported:
