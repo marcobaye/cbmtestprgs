@@ -213,7 +213,7 @@ class d64(object):
         if track < self.mintrack:
             raise Exception("Track number too low.")
         if track > self.maxtrack:
-            raise Exception("Exceeded maximum track number.")
+            raise Exception("%d exceeds maximum track number (%d)." % (track, self.maxtrack))
 
     def _check_ts(self, ts):
         """_check_ts((int, int))
@@ -225,8 +225,9 @@ class d64(object):
         # now check sector number
         if sector < 0:
             raise Exception("Given sector number was negative.")
-        if sector >= self.sectors_of_track(track):
-            raise Exception("Exceeded maximum sector number of track %d." % track)
+        maxsector = self.sectors_of_track(track) - 1
+        if sector > maxsector:
+            raise Exception("%d exceeds maximum sector number of track %d (%d)." % (sector, track, maxsector))
 
     def sectors_of_track(self, track):
         """sectors_of_track(int) -> int
@@ -519,17 +520,42 @@ class d64(object):
         """
         Follow link pointers and return each block as (ts, data) tuple.
         """
-        track, sector = ts
         all_used_ts = set()
-        while track:
+        while ts[0]:
             # sanity check
-            if (track, sector) in all_used_ts:
+            if ts in all_used_ts:
                 raise Exception("Block chain loops back to itself, please check disk image!")
-            all_used_ts.add((track, sector))
+            # sanity check
+            try:
+                self._check_ts(ts)
+            except Exception as e:
+                print("WARNING, stopped reading t/s chain:", e)
+                return
+            all_used_ts.add(ts)
             # read block, go on with link
-            block = self.read_ts((track, sector))
-            yield (track, sector), block
-            track, sector = block[0:2]
+            block = self.read_ts(ts)
+            yield ts, block
+            ts = (block[0], block[1])
+
+    def get_geos_border_block_ts(self):
+        """
+        Return t/s of GEOS border block or None if there isn't one.
+        """
+        return None
+
+    def yield_dir_entries(self, start_ts):
+        """
+        Return directory entries as 30-byte sequences.
+        """
+        for ts, block in self.yield_ts_chain(start_ts):
+            if block[0] == 0:
+                _debug(2, "Last! Link is t%d s%d." % (block[0], block[1]))
+                if block[1] != 255:
+                   print("WARNING: sector value of final dir block is %d instead of 255!" % block[1], file=sys.stderr)
+            readidx = 2
+            for i in range(8):
+                yield block[readidx:readidx + 30]
+                readidx += 32
 
     def read_directory_entries(self, include_invisible=False):
         """
@@ -537,35 +563,20 @@ class d64(object):
         (index, raw entry (30 bytes), tuple might grow in future...)
         Setting include_invisible to True yields even the empty entries.
         """
-        # FIXME - make use of yield_ts_chain()!
-        ts = self.directory_ts
-        all_used_ts = set() # for sanity check
         entry_number = 0    # index, so caller can unambiguously reference each entry
-        while ts[0]:
-            # sanity check
-            if ts in all_used_ts:
-                raise Exception("Directory loops back to itself, please check disk image!")
-            all_used_ts.add(ts)
-            try:
-                self._check_ts(ts)
-            except Exception as e:
-                print("WARNING, stopped reading dir:", e)
-                return
-            # read a directory sector
-            block = self.read_ts(ts)
-            ts = (block[0], block[1])
-            if ts[0] == 0:
-                _debug(2, "Last! Link is t%d s%d." % ts)
-            readidx = 2
-            for i in range(8):
-                bin30 = block[readidx:readidx+30]
-                readidx += 32
+        # process directory
+        for bin30 in self.yield_dir_entries(self.directory_ts):
+            if bin30[0] or include_invisible:
+                yield entry_number, bin30   # CAUTION, maybe more fields will get added in future!
+            entry_number += 1
+        # process GEOS "border block", if there is one:
+        borderblock_ts = self.get_geos_border_block_ts()
+        if borderblock_ts:
+            _debug(1, "Contents of GEOS border block:")
+            for bin30 in self.yield_dir_entries(borderblock_ts):
                 if bin30[0] or include_invisible:
                     yield entry_number, bin30   # CAUTION, maybe more fields will get added in future!
                 entry_number += 1
-        # "track" is zero, so there is no next block
-        if ts[1] != 255:
-            print("WARNING: sector value of final dir block is %d instead of 255!" % ts[1], file=sys.stderr)
 
     def get_dir_entry(self, which):
         """
@@ -588,14 +599,19 @@ class d64(object):
         file_name = bin30[3:19]
         rel_stuff = bin30[19:22]    # side sector t/s, record length
         unused = bin30[22:23]
-        date = bin30[23:26] # year since 1900, month, day
+        year = bin30[23]    # year
+        if year >= 80:
+            year += 1900    # one source claims "years since 1900"
+        else:
+            year += 2000    # but "wheels" seems to use 2 for 2002
+        month_day = bin30[24:26]    # month, day
         time = bin30[26:28] # hour, minute
         block_count = int.from_bytes(bin30[28:30], "little")
         optional = " : " + ts.hex(" ") + " : " + rel_stuff.hex(" ") + " " + unused.hex(" ") + " "
-        if all(date):
-            optional += ": %04d-%02d-%02d %02d:%02d" % (1900 + date[0], date[1], date[2], time[0], time[1])
+        if all(month_day):
+            optional += ": %04d-%02d-%02d %02d:%02d" % (year, month_day[0], month_day[1], time[0], time[1])
         else:
-            optional += (date + time).hex(" ")
+            optional += bin30[23:28].hex(" ")
         return in_use, block_count, file_name, file_type, optional
 
     def write_directory(self, new_dir): # TODO: add flag for "accept oversized dirs and use other tracks"
@@ -770,11 +786,6 @@ class _dos2p1(d64):
 # file extension is mostly .d64, sometimes .d41
 # t18s0, offset 2: 0x41 0x00 (-> format "A"), directory says "2A"
 
-# FIXME: add support for GEOS? header block holds t/s of border block and
-# a signature:
-#000165a0  a0 a0 44 46 a0 32 41 a0  a0 a0 a0 13 08 47 45 4f  |..DF.2A......GEO|
-#000165b0  53 20 66 6f 72 6d 61 74  20 56 31 2e 30 00 00 00  |S format V1.0...|
-
 class _1541(_dos2p1):
     name = "1541"
     blocks_total = 683
@@ -799,6 +810,15 @@ class _1541(_dos2p1):
 
     def try_to_allocate(self, track, sector, exact):
         return self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)
+
+    def get_geos_border_block_ts(self):
+        # t18s0 holds t/s of border block and a signature:
+        #000165ab  13 08
+        #000165ad  47 45 4f 53 20 66 6f 72  6d 61 74 20 56 31 2e 30 |GEOS format V1.0|
+        block = self.read_ts((18, 0))
+        if block[0xad:0xba] == b"GEOS format V":
+            return block[0xab], block[0xac]
+        return None
 
 ################################################################################
 # info taken from: http://mhv.bplaced.net/diskettenformate.html
@@ -1189,6 +1209,15 @@ class _1581(d64):
             ts = self._try_to_allocate((track, sector), track - 41, (16, 6), (40, 2), (17, 6), exact=exact)
         return ts
 
+    def get_geos_border_block_ts(self):
+        # t40s0 holds t/s of border block and a signature:
+        #000618ab  29 00
+        #000618ad  47 45 4f 53 20 66 6f 72  6d 61 74 20 56 31 2e 31 |GEOS format V1.1|
+        block = self.read_ts((40, 0))
+        if block[0xad:0xba] == b"GEOS format V":
+            return block[0xab], block[0xac]
+        return None
+
     def enter(self, which):
         # enter 1581-style "CBM" partition
         bin30 = self.get_dir_entry(which)
@@ -1373,7 +1402,7 @@ class _cmdpartitionable(d64):
         # check always succeeds:
         pass
 
-    partition_types = { 0:b"*DEL", 1:b" NAT", 2:b" D41", 3:b" D71", 4:b" D81", 255:b" SYS" }
+    partition_types = { 0:b"*DEL", 1:b" NAT", 2:b"  41", 3:b"  71", 4:b"  81", 5:b" 81C", 255:b" SYS" }
     def filetype(self, filetype):
         """
         Convert CBM file type to text representation.
@@ -1545,7 +1574,7 @@ def _quote(name16):
     name16 += b"\xa0"   # appending a shift-space and then replacing the first...
     return b'"' + name16.replace(b"\xa0", b'"', 1)   # ...should do the trick.
 
-def show_directory(img, second_charset, full=False):
+def show_directory(img, show_all=False, second_charset=False, long=False):
     """
     Show directory of image file.
     """
@@ -1564,12 +1593,12 @@ def show_directory(img, second_charset, full=False):
             nonempty += 1
         else:
             empty += 1
-            if full == False:
+            if show_all == False:
                 continue
         line = ('%3d: ' % index) + str(line_number).ljust(4) + " "
         line += from_petscii(_quote(name), second_charset)
         line += from_petscii(type, second_charset)
-        if full:
+        if long:
             line += optional
         print(line)
         if in_use:
@@ -1635,7 +1664,7 @@ def extract_all(img, full=False):
         else:
             extract_block_chain(img, ts, outname)
 
-def _process_file(file, second_charset, extract=False, full=False, path=None):
+def _process_file(file, show_all=False, second_charset=False, long=False, extract=False, path=None):
     if path == None:
         path = []
     try:
@@ -1651,9 +1680,9 @@ def _process_file(file, second_charset, extract=False, full=False, path=None):
         img = img.enter(component)
     img.check_bam_counters()    # TODO: add cli arg(s) to enable/disable this
     if extract:
-        extract_all(img, full=full)
+        extract_all(img, full=show_all)
     else:
-        show_directory(img, second_charset, full=full)
+        show_directory(img, show_all=show_all, second_charset=second_charset, long=long)
 
 def process_path(path):
     if not path:
@@ -1682,8 +1711,10 @@ If run directly, the directory of the given file(s) is displayed.
     parser.add_argument("-c", "--charset", action="store_true", help="use the other charset")
     parser.add_argument("-d", "--debug", action="count", default=0, help="increase debugging output")
     parser.add_argument("-e", "--enter", metavar="PATH", type=str, help="enter partition/directory/...")
-    parser.add_argument("-f", "--full", action="store_true", help="show hidden data as well")
-    parser.add_argument("-l", "--list", action="store_true", help="list supported formats")
+#    parser.add_argument("-f", "--full", action="store_true", help="same as -a -l")
+    parser.add_argument("-a", "--all", action="store_true", help="show deleted dir entries as well")
+    parser.add_argument("-l", "--long", action="store_true", help="show long directory entries")
+    parser.add_argument(      "--list", action="store_true", help="list supported formats")
     parser.add_argument("-x", "--extract", action="store_true", help="extract all files to current directory")
     parser.add_argument("files", metavar="IMAGEFILE.D64", nargs='+', help="Disk image file.")
     args = parser.parse_args()
@@ -1692,7 +1723,7 @@ If run directly, the directory of the given file(s) is displayed.
         list_formats()
     path = process_path(args.enter)
     for file in args.files:
-        _process_file(file, args.charset, extract=args.extract, full=args.full, path=path[:])
+        _process_file(file, show_all=args.all, second_charset=args.charset, long=args.long, extract=args.extract, path=path[:])
 
 if __name__ == "__main__":
     _main()

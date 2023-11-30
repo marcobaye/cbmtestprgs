@@ -6,8 +6,4 @@ maybe add a way to enter a disk image inside a disk image? needed?
 some form of format() or mkfs() call?
 
 
-keep "-f" switch for "show full dir entry", but
-add "-a" switch for "show all dir entries".
-
-
 honor error info
