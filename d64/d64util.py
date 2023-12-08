@@ -95,6 +95,10 @@ class imagefile(object):
         self.partition_size = self.block_count
 
     def set_partition(self, start_and_size):
+        """
+        Set start and size of fs in file
+        (so user can access a 1541 partition inside a .d4m file)
+        """
         self.partition_start, self.partition_size = start_and_size
 
     def has_error_block(self):
@@ -541,6 +545,11 @@ class d64(object):
         """
         Return t/s of GEOS border block or None if there isn't one.
         """
+        # FIXME: check some "supported_by_GEOS" var so this only works for 1541
+        # (and 40t/1571 friends), 1581 and CMD native.
+        block = self.read_ts(self.header_ts_and_offset[0])
+        if block[0xad:0xba] == b"GEOS format V":    # goes on with "1.0" or "1.1"...
+            return block[0xab], block[0xac]
         return None
 
     def yield_dir_entries(self, start_ts):
@@ -776,6 +785,8 @@ class _dos2p1(d64):
     # same as the one that was later used by 1541 and friends, so see below.
     # the only reason for this class is so both "1541" and "8050" can inherit
     # the REL file definition.
+    # FIXME: DOS capabilities are too different to be represented by inheritance,
+    # so just add "supports_REL/supports_CBM/supports_DIR" vars!
 
 ################################################################################
 # CBM DOS 2.6 was a merger of 2.1 and 2.5 (see below): basically it was a
@@ -811,33 +822,25 @@ class _1541(_dos2p1):
     def try_to_allocate(self, track, sector, exact):
         return self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)
 
-    def get_geos_border_block_ts(self):
-        # t18s0 holds t/s of border block and a signature:
-        #000165ab  13 08
-        #000165ad  47 45 4f 53 20 66 6f 72  6d 61 74 20 56 31 2e 30 |GEOS format V1.0|
-        block = self.read_ts((18, 0))
-        if block[0xad:0xba] == b"GEOS format V":
-            return block[0xab], block[0xac]
-        return None
-
 ################################################################################
 # info taken from: http://mhv.bplaced.net/diskettenformate.html
 # there was a "CBM 2030" disk drive unit that used disk format "2B".
 # it had the same number of tracks, but fewer sectors per track than "2A".
+# capacity was 130k instead of 170k.
 # unknown, but likely: t18s0, offset 2: 0x42 0x00 (-> format "B"), directory says "2B"
 
 class _2030(_1541):
     name = "2030"
-    #blocks_total = about 610? with about 590 free?
     #track_length_changes = {1: 19, ..., ...: 15}
+    #blocks_total = ...so maybe about 610? with about 590 free? but "130k" would be 520!
     #std_max_dir_entries =
 
 ################################################################################
 # CBM DOS 2.5 was used in CBM 8050 units.
 # new: disk changes were automatically detected
-# REL files were still limited to 720 data blocks (180 kB), but these disks
-# may have been been used in 8250 units, therefore REL files on a dos 2.5
-# disk may use the dos 2.7 format, i.e. with a super side sector - beware!
+# REL files were still limited to 720 data blocks (180 kB), but these disks may
+# have been used in 8250 units, therefore REL files on a dos 2.5 disk may use
+# the dos 2.7 format, i.e. with a super side sector - beware!
 # file extension is .d80
 # header block links to first bam block, last bam block links to first dir block.
 # t39s0, offset 2: 0x43 0x00 (-> format "C"), directory says "2C"
@@ -942,10 +945,10 @@ class _8250(_8050):
 # disk format of 1541-with-40-tracks-support
 # file extension is mostly .d64, sometimes .d41
 #
-# AFAIK there are two different ways to store the additional 5*4 BAM bytes,
-# either at the start or at the end of the unused part of t18s0:
-#   SpeedDOS uses offset 192,
-#   DolphinDOS uses offset 236?
+# there are three or four different ways to store the additional 5*4 BAM bytes:
+#   SpeedDOS uses offset 192, in the unused part of t18s0,
+#   DolphinDOS uses offset 236? in the unused part of t18s0,
+#   another system puts the data right after the old bam and moves the disk name!
 # t18s0, offset 2: 0x41 0x00 (-> format "A"), directory says "2A"
 # TODO: is there a way to recognize this format, short of trying to access tracks 36..40?
 
@@ -958,10 +961,10 @@ class _40track(_1541):
         super().check_bam_counters(alt_maxtrack=35) # let 1541 class check the first side...
         # ...and now check extra tracks:
         print("FIXME: Checking BAM counters of tracks 36..40 is not implemented.")  # TODO
-        # TODO: we could check both alternatives (SpeedDOS and Dolphin) and if
-        # only one of those is valid, consider that a successful format
-        # detection. The problem is: "all zeroes" is a valid pattern in any
-        # case, it would mean "all blocks are allocated".
+        # TODO: we could check all alternatives and if only one of those is
+        # valid, consider that a successful format detection.
+        # The problem is: "all zeroes" is a valid pattern in any case, it would
+        # mean "all blocks are allocated".
 
     def read_free_blocks(self):
         d = super().read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
@@ -1208,15 +1211,6 @@ class _1581(d64):
         else:
             ts = self._try_to_allocate((track, sector), track - 41, (16, 6), (40, 2), (17, 6), exact=exact)
         return ts
-
-    def get_geos_border_block_ts(self):
-        # t40s0 holds t/s of border block and a signature:
-        #000618ab  29 00
-        #000618ad  47 45 4f 53 20 66 6f 72  6d 61 74 20 56 31 2e 31 |GEOS format V1.1|
-        block = self.read_ts((40, 0))
-        if block[0xad:0xba] == b"GEOS format V":
-            return block[0xab], block[0xac]
-        return None
 
     def enter(self, which):
         # enter 1581-style "CBM" partition
@@ -1512,6 +1506,7 @@ def DiskImage(filename, img_mode = ImgMode.READONLY):
         img_type, error_info = _type_of_size[filesize]
         obj = img_type()
     else:
+        # FIXME: d81 with 81 tracks has same size as d1m, so add code to tell them apart!
         # valid sizes of CMD native partitions are 1..255 * 64 KiB:
         if (0 < filesize <= 0xff0000) and (filesize & 0xffff == 0):
             obj = _cmdnative(filesize)
@@ -1653,7 +1648,7 @@ def extract_all(img, full=False):
         outname = ('%03d-' % index) + cbmname
         outname += "."
         outname += from_petscii(img.filetype(filetype), second_charset=True)
-        # FIXME - make this into some "extract entry" method so there is no need to check for REL/CBM (which would fail in CMD partition tables anyway)
+        # FIXME: make this into some "extract entry" method so there is no need to check for REL/CBM (which would fail in CMD partition tables anyway)
         if (filetype & 15) == 4:
             # for REL files, add record size to name
             outname += "%03d" % bin30[21]
@@ -1723,7 +1718,7 @@ If run directly, the directory of the given file(s) is displayed.
         list_formats()
     path = process_path(args.enter)
     for file in args.files:
-        _process_file(file, show_all=args.all, second_charset=args.charset, long=args.long, extract=args.extract, path=path[:])
+        _process_file(file, show_all=args.all, second_charset=not args.charset, long=args.long, extract=args.extract, path=path[:])
 
 if __name__ == "__main__":
     _main()
