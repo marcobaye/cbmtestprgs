@@ -17,7 +17,7 @@
 
 ; basic header
 	* = $0801
-		!wo line2, 2023
+		!wo line2, 2025
 		!by $9e, $20	; "sys "
 		!by '0' + entry % 10000 / 1000
 		!by '0' + entry %  1000 /  100
@@ -64,14 +64,25 @@ my_nmi		inc reset_pos	; set flag to let main loop know
 
 ; irq hook
 my_irq		lda vic_irq
-		bmi .raster_irq
+		sta vic_irq	; acknowledge interrupt
+		jsr about_to_scan_keyboard
+		inc vsync	; set flag to let main loop know
 		; now call original irq handler
 		jmp MODIFIED16	: .ori_irq = * - 2
 
-; raster interrupt
-.raster_irq	sta vic_irq	; acknowledge interrupt
-		inc vsync	; set flag to let main loop know
-		jmp address($ea81)
+entry ; entry point for SYS
+		jsr main_init
+		; disable CIA irq
+		lda #$7f
+		sta address($dc0d)
+		; setup raster irq
+		lda #251	; first line of lower border
+		sta vic_line
+		lda #%...##.##
+		sta vic_controlv
+		lda #1	; enable raster irq
+		sta vic_irqmask
+		jmp mainloop
 
 ; include main code
 	!src "mousetest.a"

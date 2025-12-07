@@ -18,7 +18,7 @@
 
 ; basic header
 	* = $1c01
-		!wo line2, 2023
+		!wo line2, 2025
 		!h de9c3afe0231353a9e	; "graphicclr:bank15:sys"
 		!by '0' + entry % 10000 / 1000
 		!by '0' + entry %  1000 /  100
@@ -34,9 +34,14 @@ my_nmi		inc reset_pos	; set flag to let main loop know
 		jmp MODIFIED16	: .ori_nmi = * - 2
 
 ; irq hook (c128 uses raster irq as system irq, so this is even simpler than on c64):
-my_irq		inc vsync	; set flag to let main loop know
+my_irq		jsr about_to_scan_keyboard
+		inc vsync	; set flag to let main loop know
 		; now call original irq handler
 		jmp MODIFIED16	: .ori_irq = * - 2
+
+entry ; entry point for SYS
+		jsr main_init
+		jmp mainloop
 
 ; include main code
 	!src "mousetest.a"
