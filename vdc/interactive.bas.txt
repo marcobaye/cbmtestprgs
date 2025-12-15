@@ -21,8 +21,8 @@
 	xs = 0:rem xscroll (v0 vdc)
 	ys = 0:rem yscroll
 	if vv then ll = 79:xs = 7:rem adjust for v1/v2 vdcs
-	print "{home}{home}{blk}{swlc}{clr}{CBM-+}{CBM-+}{CBM-+}{CBM-+}" chr$(27) "r
-	print "{CBM-+} interactive vdc test program 7
+	print "{home}{home}{blk}{swlc}{clr} {CBM-+}{CBM-+}{CBM-+}" chr$(27) "r
+	print "{CBM-+} interactive vdc test program 8
 	print "{CBM-+}
 	print "{CBM-+} vdc version:" vv
 	print "{CBM-+}
