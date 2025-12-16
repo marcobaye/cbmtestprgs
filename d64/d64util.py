@@ -420,33 +420,30 @@ class d64(object):
         return sector >> 3, 1 << (sector & 7)
         # ...except for CMD native partitions, which is why they have their own version of this fn.
 
-    # TODO - simplify for non-1571 and give 1571 its own version!
-    def _release_block(self, ts, entry, totals_offset_step, totals_block, bitmaps_offset_step, bitmaps_block=None):
+    def _release_block(self, ts, bam_block, first_track, bam_offset, size):
         """
-        Helper function to release a single block in BAM.
+        Helper function to release a single block in BAM. This is used by 1541,
+        8050, 8250, 1581 and first side of 1571. Other formats and second side
+        of 1571 differ too much and therefore have their own functions.
 
-        ts: track (for debugging output) and sector (to determine bit position)
-        entry: which one of totals/bitmaps to use
-        totals_offset_step: where to find totals
-        totals_block: block with totals
-        bitmaps_offset_step: where to find bitmaps
-        bitmaps_block: block with bitmaps (if different from totals_block)
+        ts: track and sector of block to release
+        bam_block: block with "totals/bitmaps" structs
+        first_track: lowest track number described by this bam block
+        bam_offset: offset in block where structs begin
+        size: number of bytes per track struct (one "totals" byte and several "bitmaps" bytes)
         """
         # process args
         track, sector = ts
-        totals_offset, totals_step = totals_offset_step
-        bitmaps_offset, bitmaps_step = bitmaps_offset_step
-        if bitmaps_block == None:
-            bitmaps_block = totals_block
         # calculate offsets
+        totals_offset = bam_offset + (track - first_track) * size
         byte_offset, bit_value = self.bam_offset_and_bit(sector)
-        bitmaps_offset += entry * bitmaps_step + byte_offset
-        totals_offset += entry * totals_step
-        if bitmaps_block[bitmaps_offset] & bit_value:
+        bitmap_offset = totals_offset + 1 + byte_offset # bitmaps start after totals -> +1
+        # check/release:
+        if bam_block[bitmap_offset] & bit_value:
             raise Exception("Attempted to free a block (t%ds%d) that is already free." % (track, sector))
         else:
-            bitmaps_block[bitmaps_offset] |= bit_value
-            totals_block[totals_offset] += 1
+            bam_block[bitmap_offset] |= bit_value
+            bam_block[totals_offset] += 1
         # TODO - compare totals to maximum for this track?
         #raise Exception("BAM is corrupt, totals do not match bitmap.")
 
@@ -814,7 +811,7 @@ class _1541(_dos2p1):
         bamblock = self.read_ts((18, 0))
         dirty = False
         for track, sector in set_of_ts:
-            self._release_block((track, sector), track - 1, (4, 4), bamblock, (5, 4))
+            self._release_block((track, sector), bamblock, 1, 4, 4)
             dirty = True
         if dirty:
             self.write_ts((18, 0), bamblock)
@@ -865,10 +862,10 @@ class _8050(_dos2p1):
         dirty383 = False
         for track, sector in set_of_ts:
             if track <= 50:
-                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
+                self._release_block((track, sector), bamblock380, 1, 6, 5)
                 dirty380 = True
             else:
-                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
+                self._release_block((track, sector), bamblock383, 51, 6, 5)
                 dirty383 = True
         if dirty380:
             self.write_ts((38, 0), bamblock380)
@@ -910,16 +907,16 @@ class _8250(_8050):
         dirty389 = False
         for track, sector in set_of_ts:
             if track <= 50:
-                self._release_block((track, sector), track - 1, (6, 5), bamblock380, (7, 5))
+                self._release_block((track, sector), bamblock380, 1, 6, 5)
                 dirty380 = True
             elif track <= 100:
-                self._release_block((track, sector), track - 51, (6, 5), bamblock383, (7, 5))
+                self._release_block((track, sector), bamblock383, 51, 6, 5)
                 dirty383 = True
             elif track <= 150:
-                self._release_block((track, sector), track - 101, (6, 5), bamblock386, (7, 5))
+                self._release_block((track, sector), bamblock386, 101, 6, 5)
                 dirty386 = True
             else:
-                self._release_block((track, sector), track - 151, (6, 5), bamblock389, (7, 5))
+                self._release_block((track, sector), bamblock389, 151, 6, 5)
                 dirty389 = True
         if dirty380:
             self.write_ts((38, 0), bamblock380)
@@ -1033,6 +1030,33 @@ class _1571(_1541):
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
 
+    def release_1571_side2_block(self, ts, totals_block, bitmaps_block):
+        """
+        Helper function to release a single block in BAM. This function is only
+        used for blocks on second side of 1571 because their BAM split over two
+        blocks.
+
+        ts: track and sector of block to release
+        totals_block: block with totals (t18s0)
+        bitmaps_block: block with bitmaps (t53s0)
+        """
+        # process args
+        track, sector = ts
+        # calculate offsets
+        entry_index = track - 36    # this fn handles logical tracks 36..70
+        totals_offset = 221 + entry_index   # table of totals is located at end of t18s0
+        # bitmaps (three bytes each) are at start of t53s0:
+        byte_offset, bit_value = self.bam_offset_and_bit(sector)
+        bitmap_offset = entry_index * 3 + byte_offset
+        # check/release:
+        if bitmaps_block[bitmap_offset] & bit_value:
+            raise Exception("Attempted to free a block (t%ds%d) that is already free." % (track, sector))
+        else:
+            bitmaps_block[bitmap_offset] |= bit_value
+            totals_block[totals_offset] += 1
+        # TODO - compare totals to maximum for this track?
+        #raise Exception("BAM is corrupt, totals do not match bitmap.")
+
     def release_blocks(self, set_of_ts):
         bamblock180 = self.read_ts((18, 0))
         bamblock530 = self.read_ts((53, 0))
@@ -1040,10 +1064,10 @@ class _1571(_1541):
         dirty530 = False
         for track, sector in set_of_ts:
             if track <= 35:
-                self._release_block((track, sector), track - 1, (4, 4), bamblock180, (5, 4))
+                self._release_block((track, sector), bamblock180, 1, 4, 4)
                 dirty180 = True
             else:
-                self._release_block((track, sector), track - 36, (221, 1), bamblock180, (0, 3), bamblock530)
+                self.release_1571_side2_block((track, sector), bamblock180, bamblock530)
                 dirty180 = True
                 dirty530 = True
         if dirty180:
@@ -1201,10 +1225,10 @@ class _1581(d64):
         dirty2 = False
         for track, sector in set_of_ts:
             if track <= 40:
-                self._release_block((track, sector), track - 1, (16, 6), bamblock1, (17, 6))
+                self._release_block((track, sector), bamblock1, 1, 16, 6)
                 dirty1 = True
             else:
-                self._release_block((track, sector), track - 41, (16, 6), bamblock2, (17, 6))
+                self._release_block((track, sector), bamblock2, 41, 16, 6)
                 dirty2 = True
         if dirty1:
             self.write_ts((40, 1), bamblock1)
