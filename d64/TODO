@@ -3,7 +3,34 @@
 maybe add a way to enter a disk image inside a disk image? needed?
 
 
+some form of "create d64/d71/d81/... file"
 some form of format() or mkfs() call?
+some form of "write this string to free area of t18s0"
 
 
 honor error info
+
+
+d64_apply_dirart.py: add a warning/error if subdirs are found, because their dir
+entries cannot simply be moved around without adjusting their back links!
+
+
+add a way to set disk name and 5-char-id
+add a way to read/write/allocate/free block
+	mainly for writing boot block
+add a way to store a file to disk
+	nonstd_interleave
+		1541 uses 10 (Jiffy uses 6 for PRG and 10-12 for SEQ/REL/USR, depending on track)
+		1571 uses 6 (Jiffy uses 4 for PRG and 8-10 for SEQ/REL/USR, depending on track)
+		1581 uses 1
+	keep_on_first_side (for 1571 img)
+	interleave_sides (for 1571 img: treat tracks 36..70 as extensions of tracks 1..35)
+	if_disk_full_use_dir_track
+	put_on_dir_track_right_away
+		1541/71 uses interleave 3 for dir, so the chain goes on like this:
+		s0 (header block, links to s1, but dir starts at s1 regardless)
+		s1 s4 s7 s10 s13 s16 (there is no s19, so wrap)
+		s2 s5 s8 s11 s14 s17 (there is no s20, so wrap)
+		s3 s6 s9 s12 s15 s18 (no blocks left)
+		...sooo use these blocks in reverse order? or maybe just live
+		with the fact that the dir interleave is not 3 on this disk!

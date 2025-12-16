@@ -169,8 +169,8 @@ class d64(object):
         mintrack: lowest track number (1)
         maxtrack: highest track number
         track_length_changes: dict with "new" sectors-per-track value
-        header_ts_and_offset: where to find disc name and five-byte
-            "pseudo id"
+        header_ts_and_offset: where to find disc name and five-byte "pseudo id"
+            this is a 2-tuple: [0] is ts tuple, [1] is offset value
         bam_blocks: list of ts values where block availability map is held
         bam_start_size_maxperblock: start offset in bam blocks, size of
             entries, max number of entries per block
@@ -196,7 +196,7 @@ class d64(object):
         self._sectors_of_track = {}
         self._blocks_before_track = {}
         lba = 0
-        sectors = None  # trigger exception if track_length_changes has no "1" key!
+        sectors = None  # trigger exception if track_length_changes has no key for mintrack!
         for track in range(self.mintrack, self.maxtrack + 1):
             sectors = self.track_length_changes.get(track, sectors) # get new length or keep old one
             self._sectors_of_track[track] = sectors
@@ -257,7 +257,7 @@ class d64(object):
         Read block indicated via track/sector tuple and return as bytes or
         bytearray.
         """
-        _debug(2, "Reading t%d s%d." % ts)
+        _debug(2, "Reading t%d s%d." % (ts[0], ts[1]))
         self._check_ts(ts)
         return self.imagefile.read_block(self.ts_to_lba(ts))
 
@@ -420,7 +420,7 @@ class d64(object):
         return sector >> 3, 1 << (sector & 7)
         # ...except for CMD native partitions, which is why they have their own version of this fn.
 
-    # TODO - simplify for non-1571 and give 1571 its own version
+    # TODO - simplify for non-1571 and give 1571 its own version!
     def _release_block(self, ts, entry, totals_offset_step, totals_block, bitmaps_offset_step, bitmaps_block=None):
         """
         Helper function to release a single block in BAM.
@@ -450,6 +450,8 @@ class d64(object):
         # TODO - compare totals to maximum for this track?
         #raise Exception("BAM is corrupt, totals do not match bitmap.")
 
+    # TODO - simplify for non-1571 and give 1571 its own version!
+    # TODO - rename because there is also a method without leading '_'!
     def _try_to_allocate(self, wanted_ts, entry, totals_offset_step, totals_ts, bitmaps_offset_step, bitmaps_ts=None, exact=True):
         """
         Helper function to allocate a single block in BAM.
@@ -524,22 +526,28 @@ class d64(object):
         """
         Follow link pointers and return each block as (ts, data) tuple.
         """
-        all_used_ts = set()
-        while ts[0]:
-            # sanity check
+        all_used_ts = set() # for sanity check
+        while True:
+            if ts[0] == 0:  # TODO: this might fail for DOS 7 where 0xff marks the end?
+                break
+            # sanity checks:
             if ts in all_used_ts:
                 raise Exception("Block chain loops back to itself, please check disk image!")
-            # sanity check
+                # TODO: make this into some "d64.loop_exception" so caller can
+                # check for it, or add some return_None_in_case_of_loop arg!
             try:
                 self._check_ts(ts)
             except Exception as e:
                 print("WARNING, stopped reading t/s chain:", e)
                 return
+                # TODO: make this into some "d64.illegal_track_or_sector_exception"
+                # otherwise caller might try to interpret bogus data!
             all_used_ts.add(ts)
             # read block, go on with link
             block = self.read_ts(ts)
-            yield ts, block
-            ts = (block[0], block[1])
+            next_ts = block[0], block[1]    # read link before delivering block,
+            yield ts, block                 # because caller might alter it!
+            ts = next_ts    # go on
 
     def get_geos_border_block_ts(self):
         """
@@ -604,7 +612,7 @@ class d64(object):
         """
         in_use = bin30[0] != 0
         file_type = self.filetype(bin30[0])
-        ts = bin30[1:3]
+        t_s = bin30[1:3]
         file_name = bin30[3:19]
         rel_stuff = bin30[19:22]    # side sector t/s, record length
         unused = bin30[22:23]
@@ -616,7 +624,7 @@ class d64(object):
         month_day = bin30[24:26]    # month, day
         time = bin30[26:28] # hour, minute
         block_count = int.from_bytes(bin30[28:30], "little")
-        optional = " : " + ts.hex(" ") + " : " + rel_stuff.hex(" ") + " " + unused.hex(" ") + " "
+        optional = " : " + t_s.hex(" ") + " : " + rel_stuff.hex(" ") + " " + unused.hex(" ") + " "
         if all(month_day):
             optional += ": %04d-%02d-%02d %02d:%02d" % (year, month_day[0], month_day[1], time[0], time[1])
         else:
@@ -629,20 +637,20 @@ class d64(object):
         """
         if len(new_dir) > self.std_max_dir_entries:
             raise Exception("New dir has too many entries (%d > %d)." % (len(new_dir), self.std_max_dir_entries))
-        track, sector = self.directory_ts
+        ts = self.directory_ts
         all_used_ts = set() # for sanity check
         init_link_ptrs = False  # flag needed when growing directory (to init fresh block)
-        while track:
+        while ts[0]:
             # sanity check
-            if (track, sector) in all_used_ts:
+            if ts in all_used_ts:
                 raise Exception("Directory loops back to itself, please check disk image!")
-            all_used_ts.add((track, sector))
+            all_used_ts.add(ts)
             # read a directory sector
-            block = self.read_ts((track, sector))
-            if block[0] == 0:
-                _debug(2, "Last! Link is t%d s%d." % (block[0], block[1]))
+            block = self.read_ts(ts)
             if init_link_ptrs:
                 block[0:2] = 0x00, 0xff # init fresh dir block
+            elif block[0] == 0:
+                _debug(2, "Last! Link is t%d s%d." % (block[0], block[1]))
             writeidx = 2
             # overwrite all eight entries
             for i in range(8):
@@ -653,23 +661,23 @@ class d64(object):
                 block[writeidx:writeidx+30] = entry
                 writeidx += 32
             # check current link ptr (may get modified)
-            next_track, next_sector = block[0:2]
+            next_ts = block[0], block[1]
             # now for the interesting part, enlarging/shrinking directory:
-            if len(new_dir) and next_track == 0:
+            if len(new_dir) and next_ts[0] == 0:
                 # we have more data but no block to put it
-                block[0:2] = self.get_new_block((track, sector))    # get a new block and let current block point to it
+                block[0:2] = self.get_new_block(ts) # get a new block and let current block point to it
                 init_link_ptrs = True   # make sure link pointers get overwritten with 00/ff from now on
-            elif len(new_dir) == 0 and next_track:
+            elif len(new_dir) == 0 and next_ts[0]:
                 # we have more block(s) but no data for them
-                self.free_block_chain((next_track, next_sector))    # free all following blocks
-                block[0:2] = 0x00, 0xff # mark this block as final
+                self.free_block_chain(next_ts)  # free all following blocks
+                block[0:2] = 0x00, 0xff # mark this block as the last
             # write back
-            self.write_ts((track, sector), block)
+            self.write_ts(ts, block)
             # get (potentially modified) link ptr
-            track, sector = block[0:2]
+            ts = block[0], block[1]
         # "track" is zero, so there is no next block
-        if sector != 255:
-            print("WARNING: sector value of final dir block is %d instead of 255!" % sector, file=sys.stderr)
+        if ts[1] != 255:
+            print("WARNING: sector value of final dir block is %d instead of 255!" % ts[1], file=sys.stderr)
         # sanity check
         if len(new_dir):
             sys.exit("BUG: still data left after writing dir!")
@@ -711,22 +719,14 @@ class d64(object):
             raise Exception("Directory track is full!")
         return ts   # return track and sector
 
-    def free_block_chain(self, ts):
+    def free_block_chain(self, start_ts):
         """
         Free all connected blocks, following the chain of link pointers.
         """
-        # FIXME - make use of yield_ts_chain()!
-        track, sector = ts
-        all_used_ts = set()
-        while track:
-            # sanity check
-            if (track, sector) in all_used_ts:
-                raise Exception("Block chain loops back to itself, please check disk image!")
-            all_used_ts.add((track, sector))
-            # read block, free it, go on with link
-            block = self.read_ts((track, sector))
-            track, sector = block[0:2]
-        self.release_blocks(all_used_ts)
+        all_ts = set()
+        for ts, block in self.yield_ts_chain(start_ts):
+            all_ts.add(ts)
+        self.release_blocks(all_ts)
 
     def filetype(self, filetype):
         """
@@ -985,8 +985,9 @@ class _40track(_1541):
 # - on disc the format is still called "2A".
 # - there are no super side sectors, so REL files are limited to 720 data blocks.
 # - the BAM for the second side is split:
-#       counters are at end of t18s0, bitmaps are at start of t53s0.
-# - t53 (t18 on second side) is allocated completely, though only t53s0 is used.
+#       counters are at t18s0 (offset 221), bitmaps are at t53s0 (offset 0).
+# - t53 (t18 on second side) is allocated completely, though only the first 105
+#       bytes of t53s0 are used.
 # (this "DOS 3" has nothing to do with the "DOS 3" used in D9060/D9090 hard disks)
 # file extension is .d71 or .d64
 # t18s0, offset 2: 0x41 0x80 (-> format "A" and flag bit), directory says "2A"
@@ -1005,11 +1006,11 @@ class _1571(_1541):
         #_debug(1, "Checking 1571 BAM (second side)")
         # BAM for second side is split into two parts (totals at 18,0 and bitmaps at 53,0),
         # so we cannot use the std function:
-        total_block = self.read_ts((18, 0))
+        totals_block = self.read_ts((18, 0))
         bits_block = self.read_ts((53, 0))
         for entry in range(35):
             track = entry + 36
-            total = total_block[221 + entry]
+            total = totals_block[221 + entry]
             sum = 0
             for i in range(3):
                 sum += _popcount(bits_block[entry * 3 + i])
@@ -1017,6 +1018,11 @@ class _1571(_1541):
                 _debug(9, "track %d: %d free blocks" % (track, sum))
             else:
                 print("BAM error for track %d: counter says %d, bitfield says %d!" % (track, total, sum), file=sys.stderr)
+        # if t53 is free'd, VALIDATE on realhw throws "71, dir error" and does
+        # not write fixed BAM to disk, so let's add a check for that:
+        totals_t53 = totals_block[221 + 17] # offset 17 means "cylinder 18" i.e. track 53
+        if totals_t53:
+            print("BAM shows %d free blocks on t53, drive does not like this!" % totals_t53)
 
     def read_free_blocks(self):
         d = super().read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
@@ -1451,6 +1457,9 @@ class _cmdpartitionable(d64):
         new_obj._populate(self.imagefile)
         return new_obj  # tell caller to use the new handler
 
+    def get_geos_border_block_ts(self):
+        return None
+
 class _cmdfd1m(_cmdpartitionable):
     name = "CMD DD partitioned"
     blocks_total = 3240
@@ -1641,7 +1650,7 @@ def extract_all(img, full=False):
         index = entry[0]
         bin30 = entry[1]
         filetype = bin30[0]
-        ts = bin30[1:3]
+        ts = bin30[1], bin30[2]
         cbmname = from_petscii(bin30[3:19], second_charset=True)
         cbmname = cbmname.replace("=", "=3D")
         cbmname = cbmname.replace("/", "=2F")
