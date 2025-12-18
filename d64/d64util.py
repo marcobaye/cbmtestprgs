@@ -45,6 +45,23 @@ _errorcodes_map = {
 }
 _errorcodes_chars = "X.2s4c6789hi"  # characters for display (X=illegal, .=ok)
 
+geos_file_types = {
+    1:  b" BAS ",  # basic
+    2:  b" ASS ",  # assembler
+    3:  b" DAT ",  # data file
+    4:  b" SYS ",  # system File
+    5:  b" DAC ",  # desk accessory
+    6:  b" APP ",  # application
+    7:  b" DOC ",  # application data
+    8:  b" FON ",  # font
+    9:  b" PRN ",  # printer driver
+    10: b" INP ",  # input driver
+    11: b" DRV ",  # disk driver
+    12: b" BOO ",  # system boot file
+    13: b" TMP ",  # temporary
+    14: b" AUT ",  # auto-execute file
+}
+
 ################################################################################
 # backend
 
@@ -607,21 +624,29 @@ class d64(object):
         """
         Convert directory entry to what is shown to user
         """
-        in_use = bin30[0] != 0
-        file_type = self.filetype(bin30[0])
+        # read fields
+        cbm_type = bin30[0]
         t_s = bin30[1:3]
         file_name = bin30[3:19]
-        rel_stuff = bin30[19:22]    # side sector t/s, record length
-        unused = bin30[22:23]
+        second_t_s = bin30[19:21]   # t/s of side sector (REL) or info block (GEOS)
+        record_length = bin30[21:22]    # GEOS: 0=normal file, 1=VLIR file
+        geos_type = bin30[22:23]
         year = bin30[23]    # year
+        month_day = bin30[24:26]    # month, day
+        time = bin30[26:28] # hour, minute
+        block_count = bin30[28:30]
+        # process
+        in_use = cbm_type != 0
+        if ((cbm_type & 15) == 3) and geos_type[0] != 0:
+            file_type = geos_file_types.get(geos_type[0], b" ??? ")
+        else:
+            file_type = self.filetype(cbm_type)
         if year >= 80:
             year += 1900    # one source claims "years since 1900"
         else:
             year += 2000    # but "wheels" seems to use 2 for 2002
-        month_day = bin30[24:26]    # month, day
-        time = bin30[26:28] # hour, minute
-        block_count = int.from_bytes(bin30[28:30], "little")
-        optional = " : " + t_s.hex(" ") + " : " + rel_stuff.hex(" ") + " " + unused.hex(" ") + " "
+        block_count = int.from_bytes(block_count, "little")
+        optional = " : " + t_s.hex(" ") + " : " + second_t_s.hex(" ") + " " + record_length.hex(" ") + " " + geos_type.hex(" ") + " "
         if all(month_day):
             optional += ": %04d-%02d-%02d %02d:%02d" % (year, month_day[0], month_day[1], time[0], time[1])
         else:
