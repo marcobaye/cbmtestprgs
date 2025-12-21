@@ -17,11 +17,15 @@ def _debug(minlevel, *unnamed, **named):
 
 def _popcount(integer):
     """Helper function to check bit fields in BAM."""
-    counted = 0
-    while integer:
-        counted += 1
-        integer = integer & (integer - 1)
-    return counted
+    return bin(integer).count("1")
+    # since python 3.10 there is also:
+    #   return integer.bit_count()
+    # here's the old C algo:
+    #counted = 0
+    #while integer:
+    #    counted += 1
+    #    integer = integer & (integer - 1)
+    #return counted
 
 # error codes
 _errorcodes_map = {
@@ -61,6 +65,33 @@ geos_file_types = {
     13: b" TMP ",  # temporary
     14: b" AUT ",  # auto-execute file
 }
+
+class d64Exception(Exception):
+    pass
+# TODO: define exceptions for "LoopDetected" and "DoublyAllocated"
+
+class cbmdosException(d64Exception):
+    def __init__(self, code, msg, track, sector):
+        self.code = code
+        self.msg = msg
+        self.track = track
+        self.sector = sector
+        self.status = f"{code}, {msg}, {track}, {sector}"
+    def __str__(self):
+        return self.status
+
+class WriteProtectOnException(cbmdosException):
+    def __init__(self):
+        super().__init__(26, "write protect on", 0, 0)
+
+class IllegalTrackOrSectorException(cbmdosException):
+    def __init__(self, track, sector):
+        super().__init__(66, "illegal track or sector", track, sector)
+
+class DiskFullException(cbmdosException):
+    def __init__(self):
+        super().__init__(72, "disk full", 0, 0)
+
 
 ################################################################################
 # backend
@@ -133,7 +164,7 @@ class imagefile(object):
         offset = 256 * (self.partition_start + lba)
         self.body[offset:offset+256] = data
         if self.img_mode == ImgMode.READONLY:
-            raise Exception("Tried to write in readonly mode.")
+            raise WriteProtectOnException() # "Tried to write in readonly mode."
         elif self.img_mode == ImgMode.WRITEBACK:
             self.need_writeback = True
         elif self.img_mode == ImgMode.DETACHED:
@@ -226,29 +257,30 @@ class d64(object):
         if _debuglevel >= 2:
             self._print_error_block()
 
-    def _check_track_num(self, track):
-        """_check_track_num(int)
+    def _check_track_num(self, ts):
+        """_check_track_num((int, int))
 
         Throw exception if track number is invalid for this image type.
         """
+        track, sector = ts
         if track < self.mintrack:
-            raise Exception("Track number too low.")
+            raise IllegalTrackOrSectorException(track, sector)  # "Track number too low."
         if track > self.maxtrack:
-            raise Exception("%d exceeds maximum track number (%d)." % (track, self.maxtrack))
+            raise IllegalTrackOrSectorException(track, sector)  # "%d exceeds maximum track number (%d)." % (track, self.maxtrack)
 
     def _check_ts(self, ts):
         """_check_ts((int, int))
 
         Throw exception if track/sector address is invalid for this image type.
         """
+        self._check_track_num(ts)
         track, sector = ts
-        self._check_track_num(track)
         # now check sector number
         if sector < 0:
-            raise Exception("Given sector number was negative.")
+            raise IllegalTrackOrSectorException(track, sector)  # "Given sector number was negative."
         maxsector = self.sectors_of_track(track) - 1
         if sector > maxsector:
-            raise Exception("%d exceeds maximum sector number of track %d (%d)." % (sector, track, maxsector))
+            raise IllegalTrackOrSectorException(track, sector)  # "%d exceeds maximum sector number of track %d (%d)." % (sector, track, maxsector)
 
     def sectors_of_track(self, track):
         """sectors_of_track(int) -> int
@@ -256,7 +288,7 @@ class d64(object):
         Return number of sectors in given track. Sector numbers start
         at 0, so the maximum sector number is one less than this.
         """
-        self._check_track_num(track)
+        self._check_track_num((track, 0))
         return self._sectors_of_track[track]
 
     def ts_to_lba(self, ts):
@@ -658,7 +690,7 @@ class d64(object):
         Overwrite directory with data given as list of 30-byte entries.
         """
         if len(new_dir) > self.std_max_dir_entries:
-            raise Exception("New dir has too many entries (%d > %d)." % (len(new_dir), self.std_max_dir_entries))
+            raise DiskFullException()   # "New dir has too many entries (%d > %d)." % (len(new_dir), self.std_max_dir_entries)
         ts = self.directory_ts
         all_used_ts = set() # for sanity check
         init_link_ptrs = False  # flag needed when growing directory (to init fresh block)
@@ -739,6 +771,8 @@ class d64(object):
         ts = self.try_to_allocate(cand_track, cand_sector, exact=False)
         if ts == None:
             raise Exception("Directory track is full!")
+            # TODO: raise DiskFullException in case of directory track
+            # TODO: in future, support other tracks as well
         return ts   # return track and sector
 
     def free_block_chain(self, start_ts):
