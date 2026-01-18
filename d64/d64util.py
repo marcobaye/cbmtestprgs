@@ -1740,16 +1740,42 @@ def extract_all(img, full=False):
         outname = ('%03d-' % index) + cbmname
         outname += "."
         outname += from_petscii(img.filetype(filetype), second_charset=True)
-        # FIXME: make this into some "extract entry" method so there is no need to check for REL/CBM (which would fail in CMD partition tables anyway)
+        alt_ts = bin30[19], bin30[20]   # side sector chain or GEOS info block
+        # FIXME: make this into some "extract entry" method so there is no need
+        # to check for REL/CBM (which would fail in CMD partition tables anyway)
+        # REL file?
         if (filetype & 15) == 4:
             # for REL files, add record size to name
             outname += "%03d" % bin30[21]
+            extract_block_chain(img, ts, outname)
+            # and for now, also extract the side sector chain:
+            extract_block_chain(img, alt_ts, outname + ".ssc")
+            continue
+        # "CBM"-style partition?
         if (filetype & 15) == 5:
             # CBM files are partitions, i.e. without link pointers
             blockcount = int.from_bytes(bin30[28:30], "little")
             extract_block_sequence(img, ts, outname, blockcount)
-        else:
-            extract_block_chain(img, ts, outname)
+            continue
+        # extract GEOS info block
+        if alt_ts[0]:
+            extract_block_chain(img, alt_ts, outname + ".infoblock")
+        # GEOS VLIR file?
+        if bin30[21] == 1 and bin30[22] != 0:
+            vlir = list(img.yield_ts_chain(ts))
+            if len(vlir) == 1:
+                # extract all 127 possible records with name postfix:
+                dummy, vlir_block = vlir[0]
+                for fork in range(1, 128):
+                    ts = vlir_block[2 * fork], vlir_block[2 * fork + 1]
+                    if ts[0]:
+                        extract_block_chain(img, ts, outname + '.%03d' % fork)
+                    else:
+                        pass    # FIXME - 00 ff means ignore, 00 00 means end?
+                continue
+            print("looks like a GEOS VLIR file, but isn't! (too long)")
+        # everything else:
+        extract_block_chain(img, ts, outname)
 
 def _process_file(file, show_all=False, second_charset=False, long=False, extract=False, path=None):
     if path == None:
