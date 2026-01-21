@@ -27,6 +27,13 @@ def _popcount(integer):
     #    integer = integer & (integer - 1)
     #return counted
 
+def ts_chain_to_bytes(block_chain):
+    """ helper function to convert list of track/sector tuples to byte array """
+    result = bytes()
+    for ts, block in block_chain:
+        result += bytes(ts)
+    return result
+
 # error codes
 _errorcodes_map = {
     1: 1,   # ok
@@ -843,24 +850,32 @@ class d64(object):
             actual_blocks += len(second_chain)
         # check block count
         if actual_blocks != block_count:
-            print(f"block count ({block_count}) is wrong, should be {actual_blocks}.")
+            print(f"Block count in directory is wrong ({block_count}), should be {actual_blocks}.")
         # for REL files, check contents of side sectors:
         if (cbm_type & 15) == 4:
             if len(second_chain) > 6:
                 print("More than six side sectors!")
             else:
+                std_table = ts_chain_to_bytes(std_chain)
+                ss_table = ts_chain_to_bytes(second_chain)
+                #print("ss table:", ss_table)
                 for index, pair in enumerate(second_chain):
                     ts, block = pair
+                    if block[0] == 0:
+                        if block[1] != 16 + len(std_table) - 1:
+                            print(f"Final side sector ({index}) has wrong end offset ({block[1]}).")
                     if block[2] != index:
-                        print(f"Side sector {index} has wrong number ({block[2]})")
+                        print(f"Side sector {index} has wrong number ({block[2]}).")
                     if block[3] != record_length:
-                        print(f"Side sector {index} has wrong record length ({block[3]})")
-                    # FIXME: check side sectors' pointers to side sectors
-                    # FIXME: collect side sectors' pointers to data blocks
-#                    for idx2, pair2 in enumerate(second_chain):
-#                       ts2, dummy = pair2
-#                        if block[4 + idx2
-            # 0x TODO: make sure info in side sectors is correct:
+                        print(f"Side sector {index} has wrong record length ({block[3]}).")
+                    # check side sectors' pointers to side sectors:
+                    if block[4:4+len(ss_table)] != ss_table:
+                        print(f"Side sector {index} has wrong pointers to side sectors.")
+                    # check side sectors' pointers to data blocks:
+                    pointer_bytes = std_table[:240]
+                    std_table = std_table[240:]
+                    if block[16:16+len(pointer_bytes)] != pointer_bytes:
+                        print(f"Side sector {index} has wrong pointers to data blocks.")
         #
 
 
