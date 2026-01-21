@@ -568,22 +568,35 @@ class d64(object):
         """
         self._virtualfn()
 
-    def yield_ts_chain(self, ts):
+    def yield_ts_chain(self, ts, display=False):
         """
         Follow link pointers and return each block as (ts, data) tuple.
         """
+        last_track = -1 # for display
         all_used_ts = set() # for sanity check
         while True:
             if ts[0] == 0:  # TODO: this might fail for DOS 7 where 0xff marks the end?
+                if display:
+                    print()
                 break
+            if display:
+                if ts[0] != last_track:
+                    print()
+                    print("t %02x s" % ts[0], end="")
+                    last_track = ts[0]
+                print(" %02x" % ts[1], end="")
             # sanity checks:
             if ts in all_used_ts:
+                if display:
+                    print()
                 raise Exception("Block chain loops back to itself, please check disk image!")
                 # TODO: make this into some "d64.loop_exception" so caller can
                 # check for it, or add some return_None_in_case_of_loop arg!
             try:
                 self._check_ts(ts)
             except Exception as e:
+                if display:
+                    print()
                 print("WARNING, stopped reading t/s chain:", e)
                 return
                 # TODO: make this into some "d64.illegal_track_or_sector_exception"
@@ -805,6 +818,51 @@ class d64(object):
         The partition/subdirectory is specified via its directory index.
         """
         sys.exit("Error: This image type does not support entering partitions/directories.")
+
+    def check_file(self, index):
+        """
+        check blocks of file (only really useful for REL files)
+        """
+        bin30 = self.get_dir_entry(index)
+        # read fields
+        cbm_type = bin30[0]
+        t_s = bin30[1], bin30[2]
+        #file_name = bin30[3:19]
+        second_t_s = bin30[19], bin30[20]   # t/s of side sector (REL) or info block (GEOS)
+        record_length = bin30[21]   # GEOS: 0=normal file, 1=VLIR file
+        geos_type = bin30[22:23]
+        block_count = int.from_bytes(bin30[28:30], "little")
+        # std file body:
+        print("Checking block chain:", end="")
+        std_chain = list(self.yield_ts_chain(t_s, display=True))
+        actual_blocks = len(std_chain)
+        if second_t_s[0]:
+            # side sectors:
+            print("Checking side sector chain:", end="")
+            second_chain = list(self.yield_ts_chain(second_t_s, display=True))
+            actual_blocks += len(second_chain)
+        # check block count
+        if actual_blocks != block_count:
+            print(f"block count ({block_count}) is wrong, should be {actual_blocks}.")
+        # for REL files, check contents of side sectors:
+        if (cbm_type & 15) == 4:
+            if len(second_chain) > 6:
+                print("More than six side sectors!")
+            else:
+                for index, pair in enumerate(second_chain):
+                    ts, block = pair
+                    if block[2] != index:
+                        print(f"Side sector {index} has wrong number ({block[2]})")
+                    if block[3] != record_length:
+                        print(f"Side sector {index} has wrong record length ({block[3]})")
+                    # FIXME: check side sectors' pointers to side sectors
+                    # FIXME: collect side sectors' pointers to data blocks
+#                    for idx2, pair2 in enumerate(second_chain):
+#                       ts2, dummy = pair2
+#                        if block[4 + idx2
+            # 0x TODO: make sure info in side sectors is correct:
+        #
+
 
 ################################################################################
 # CBM DOS 1.0 disk format, as used in non-upgraded CBM 2040 and CBM 3040 units.
