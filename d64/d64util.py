@@ -27,13 +27,6 @@ def _popcount(integer):
     #    integer = integer & (integer - 1)
     #return counted
 
-def ts_chain_to_bytes(block_chain):
-    """ helper function to convert list of track/sector tuples to byte array """
-    result = bytes()
-    for ts, block in block_chain:
-        result += bytes(ts)
-    return result
-
 # error codes
 _errorcodes_map = {
     1: 1,   # ok
@@ -575,9 +568,10 @@ class d64(object):
         """
         self._virtualfn()
 
-    def yield_ts_chain(self, ts, display=False):
+    def yield_ts_chain(self, ts, display=False, include_blocks=True):
         """
         Follow link pointers and return each block as (ts, data) tuple.
+        If include_blocks is False, only return ts tuples.
         """
         last_track = -1 # for display
         all_used_ts = set() # for sanity check
@@ -611,8 +605,9 @@ class d64(object):
             all_used_ts.add(ts)
             # read block, go on with link
             block = self.read_ts(ts)
-            next_ts = block[0], block[1]    # read link before delivering block,
-            yield ts, block                 # because caller might alter it!
+            # read link before delivering block, because caller might alter it!
+            next_ts = block[0], block[1]
+            yield (ts, block) if include_blocks else ts
             ts = next_ts    # go on
 
     def get_geos_border_block_ts(self):
@@ -826,6 +821,64 @@ class d64(object):
         """
         sys.exit("Error: This image type does not support entering partitions/directories.")
 
+    def check_side_sectors(self, std_chain, second_chain, record_length):
+        """
+        Check all contents of a REL file's side sectors.
+        "std_chain" is the t/s list of file's normal blocks, without actual block data.
+        "second_chain" is the t/s list of side sectors, along with content.
+        """
+        # is the first side sector a "super side sector"?
+        # (used on 8250, 1581 and maybe CMD native):
+        if second_chain[0][1][2] == 0xfe:
+            print("First side sector is a super side sector.")
+            super_side_sector = second_chain[0][1]  # [1] -> contents
+            second_chain = second_chain[1:]
+        else:
+            super_side_sector = None
+            if len(second_chain) > 6:
+                print(f"Found {len(second_chain)} side sectors, max is 6!")
+                return
+        # convert all t/s values to bytes for easier checking:
+        std_table = bytes()
+        for ts in std_chain:
+            std_table += bytes(ts)
+        ss_table = bytes()
+        for ts, block in second_chain:
+            ss_table += bytes(ts)
+        # check contents of super side sector:
+        if super_side_sector is not None:
+            sss_table = bytes()
+            ss_copy = ss_table
+            while ss_copy:
+                sss_table += ss_copy[0:2]   # pointer to first of six
+                ss_copy = ss_copy[12:]  # ignore the other five
+            sss_table += bytes(126*2)   # append zeroes
+            sss_table = sss_table[:126*2]   # cut to correct length
+            if super_side_sector[3:255] != sss_table:
+                print("Super side sector has wrong pointers to side sector groups.")
+        # check contents of "normal" side sectors:
+        for index, pair in enumerate(second_chain):
+            ts, block = pair
+            if block[0] == 0:
+                if block[1] != 16 + len(std_table) - 1:
+                    print(f"Final side sector ({index}) has wrong end offset ({block[1]}).")
+            if block[2] != index % 6:
+                print(f"Side sector {index} has wrong number ({block[2]}).")
+            if block[3] != record_length:
+                print(f"Side sector {index} has wrong record length ({block[3]}).")
+            # is this a new group? -> get a new table of pointers to side sectors
+            if index % 6 == 0:
+                ss6_table = (ss_table[:12] + bytes(12))[:12]
+                ss_table = ss_table[12:]
+            # check side sector's pointers to side sectors:
+            if block[4:16] != ss6_table:
+                print(f"Side sector {index} has wrong pointers to side sectors.")
+            # check side sector's pointers to data blocks:
+            pointer_bytes = std_table[:240]
+            std_table = std_table[240:]
+            if block[16:16+len(pointer_bytes)] != pointer_bytes:
+                print(f"Side sector {index} has wrong pointers to data blocks.")
+
     def check_file(self, index):
         """
         check blocks of file (only really useful for REL files)
@@ -841,7 +894,7 @@ class d64(object):
         block_count = int.from_bytes(bin30[28:30], "little")
         # std file body:
         print("Checking block chain:", end="")
-        std_chain = list(self.yield_ts_chain(t_s, display=True))
+        std_chain = list(self.yield_ts_chain(t_s, display=True, include_blocks=False))
         actual_blocks = len(std_chain)
         if second_t_s[0]:
             # side sectors:
@@ -853,29 +906,7 @@ class d64(object):
             print(f"Block count in directory is wrong ({block_count}), should be {actual_blocks}.")
         # for REL files, check contents of side sectors:
         if (cbm_type & 15) == 4:
-            if len(second_chain) > 6:
-                print("More than six side sectors!")
-            else:
-                std_table = ts_chain_to_bytes(std_chain)
-                ss_table = ts_chain_to_bytes(second_chain)
-                #print("ss table:", ss_table)
-                for index, pair in enumerate(second_chain):
-                    ts, block = pair
-                    if block[0] == 0:
-                        if block[1] != 16 + len(std_table) - 1:
-                            print(f"Final side sector ({index}) has wrong end offset ({block[1]}).")
-                    if block[2] != index:
-                        print(f"Side sector {index} has wrong number ({block[2]}).")
-                    if block[3] != record_length:
-                        print(f"Side sector {index} has wrong record length ({block[3]}).")
-                    # check side sectors' pointers to side sectors:
-                    if block[4:4+len(ss_table)] != ss_table:
-                        print(f"Side sector {index} has wrong pointers to side sectors.")
-                    # check side sectors' pointers to data blocks:
-                    pointer_bytes = std_table[:240]
-                    std_table = std_table[240:]
-                    if block[16:16+len(pointer_bytes)] != pointer_bytes:
-                        print(f"Side sector {index} has wrong pointers to data blocks.")
+            self.check_side_sectors(std_chain, second_chain, record_length)
         #
 
 
