@@ -734,7 +734,10 @@ class d64(object):
             # now for the interesting part, enlarging/shrinking directory:
             if len(new_dir) and next_ts[0] == 0:
                 # we have more data but no block to put it
-                block[0:2] = self.get_new_block(ts) # get a new block and let current block point to it
+                next_ts = self.get_block_on_track(ts, self.std_directory_interleave)    # get a new block and let current block point to it
+                if next_ts == None:
+                    raise Exception("Directory track is full!") # TODO: raise DiskFullException
+                block[0:2] = next_ts
                 init_link_ptrs = True   # make sure link pointers get overwritten with 00/ff from now on
             elif len(new_dir) == 0 and next_ts[0]:
                 # we have more block(s) but no data for them
@@ -765,30 +768,72 @@ class d64(object):
         # and then there are 11 bytes for various (DOS/GEOS) purposes, all 0 here
         return entry
 
-    def get_new_block(self, prev_ts):
+    def get_new_start_block(self):
         """
-        Find and allocate a new block after given block, return t/s.
+        Find and allocate a block for a new file.
+        Return ts or raise DiskFullException.
+        """
+        # TODO: check if there are any free blocks at all? or search anyway to be safe?
+        # start next to directory track, alternating between lower and higher tracks:
+        lower = self.directory_ts[0] - 1
+        higher = self.directory_ts[0] + 1
+        while True:
+            checks = 0
+            if lower >= self.mintrack:
+                checks += 1
+                ts = self.try_to_allocate(lower, 0, exact=False)
+                if ts is not None:
+                    return ts
+                lower -= 1
+            if higher <= self.maxtrack:
+                checks += 1
+                ts = self.try_to_allocate(higher, 0, exact=False)
+                if ts is not None:
+                    return ts
+                higher += 1
+            # if tracks are exhausted in both directions, give up:
+            if checks == 0:
+                break
+        raise DiskFullException()
+
+    def get_block_on_track(self, prev_ts, interleave=None, cand_track=None):
+        """
+        Find and allocate a new block after given block on specific track.
+        Return ts or None if track is full.
         """
         prev_track, prev_sector = prev_ts
-        cand_track = prev_track
+        if interleave is None:
+            interleave = self.std_file_interleave
+        if cand_track is None:
+            cand_track = prev_track
         # to get a candidate sector, add interleave:
-        if cand_track == self.directory_ts[0]:
-            cand_sector = prev_sector + self.std_directory_interleave   # may be out of range, see check below!
-        else:
-            cand_sector = prev_sector + self.std_file_interleave    # may be out of range, see check below!
-            raise Exception("Block allocation is only supported for directory track at the moment!")
-            # ...and to fully support files, we'd also need to iterate over all tracks of disk!
-        # if out of range, wrap around:
+        cand_sector = prev_sector + interleave
+        # and wrap around if out of range:
         num_sectors = self.sectors_of_track(cand_track)
-        if cand_sector >= num_sectors:
+        # some clown may try to use an interleave of "100", so use "while" instead of "if":
+        while cand_sector >= num_sectors:
             cand_sector -= num_sectors
         # just do what the DOS does, allocate the next possible sector:
-        ts = self.try_to_allocate(cand_track, cand_sector, exact=False)
-        if ts == None:
-            raise Exception("Directory track is full!")
-            # TODO: raise DiskFullException in case of directory track
-            # TODO: in future, support other tracks as well
-        return ts   # return track and sector
+        return self.try_to_allocate(cand_track, cand_sector, exact=False)
+
+    def get_additional_block(self, prev_ts, interleave=None):
+        """
+        Find and allocate a new block after given block.
+        Return ts or raise DiskFullException.
+        """
+        ts = self.get_block_on_track(prev_ts, interleave)
+        if ts is not None:
+            return ts
+        raise Exception("not implemented!")
+        # TODO:
+        # if track is lower than directory track, search lower tracks
+        # if track is higher than directory track, search higher tracks
+        # if track limit reached, search the other direction
+        # but what is the _exact_ algorithm used by the DOS?
+        # if we start on t10 and find no free blocks on t9..t1, do we start
+        # looking upward from t11? or do start looking upward from t18 (dir)
+        # and only check tracks 17..11 if higher tracks are exhausted?
+        # check with real CBM DOS!
 
     def free_block_chain(self, start_ts):
         """
@@ -821,6 +866,9 @@ class d64(object):
         """
         sys.exit("Error: This image type does not support entering partitions/directories.")
 
+# FIXME - a lot of this code could be re-used for _creating_ side sectors, so
+# better split this up into "make correct side sectors" and "compare correct
+# side sectors to actual side sectors":
     def check_side_sectors(self, std_chain, second_chain, record_length):
         """
         Check all contents of a REL file's side sectors.
@@ -828,7 +876,7 @@ class d64(object):
         "second_chain" is the t/s list of side sectors, along with content.
         """
         # is the first side sector a "super side sector"?
-        # (used on 8250, 1581 and maybe CMD native):
+        # (used on 8250, 1581 and CMD native partitions):
         if second_chain[0][1][2] == 0xfe:
             print("First side sector is a super side sector.")
             super_side_sector = second_chain[0][1]  # [1] -> contents
@@ -909,6 +957,38 @@ class d64(object):
             self.check_side_sectors(std_chain, second_chain, record_length)
         #
 
+    # TODO: maybe add optional args for
+    #   - use alternative sector interleave
+    #   - interleave sides on 1571 (and 8250?)
+    #   - only make a super side sector if needed
+    def allocate_file(filesize, record_length=None):
+        """
+        allocate enough blocks so a file of the given size can be stored.
+        if record_length is given, create a chain of side sectors pointing to
+        the data blocks.
+        return a tuple: first item is list of track/sector tuples so caller can
+        do the actual block writes, second item is t/s of first side sector.
+        """
+        data_block_count = div_round_up(filesize, 254)  # FIXME - write helper fn!
+        total_block_count = data_block_count
+        if record_length is not None:
+            if filesize % record_length != 0:
+                raise Exception(f"File size ({filesize}) is not a multiple of record length ({record_length}).")
+            side_sector_count = div_round_up(data_block_count, 120)
+            total_block_count += side_sector_count
+            #if side_sector_count > 6:
+            if self.supports_sss:
+                total_block_count += 1
+                create_sss = True
+            else:
+                create_sss = False
+        if total_block_count > self.get_free_blocks():
+            raise Exception("Not enough free blocks to add file.")
+        print("TODO: finish writing this function. ;)")
+        # call new function to get first data block
+        # loop: get ts for data blocks, at the correct times get ts for ss and sss.
+        # after loop, write data to sss and ss.
+        # return list of all data ts and ts of first ss.
 
 ################################################################################
 # CBM DOS 1.0 disk format, as used in non-upgraded CBM 2040 and CBM 3040 units.

@@ -4,15 +4,19 @@ import d64util
 import sys  # for sys.stderr and sys.exit
 
 def show_help():
+    # TODO:
+    #d64.py create IMAGE             create new empty disc image
+    #d64.py addfile IMAGE FILE       add file to image
+    #d64.py extract [--full] [--p00] IMAGE [FILENUM]     extract files from disc image
+    #d64.py create --typeswitches --force IMG.D64
+    #d64.py addfile --forcetype --relsize IMG.D64 FILE
+    #d64.py check IMG.D64
     print("""
 Usage:
     d64.py [-h] [help]              show this help
     d64.py help [MODE]              show help about mode
     d64.py list                     list supported image formats
     d64.py [dir] IMAGE              show directory
-    d64.py create IMAGE             create new empty disc image
-    d64.py addfile IMAGE FILE       add file to image
-    d64.py extract IMAGE            extract files from disc image
     d64.py checkfile IMAGE FILENUM  check blocks of file
 """)
 
