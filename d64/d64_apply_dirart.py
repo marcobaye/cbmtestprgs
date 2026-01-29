@@ -10,7 +10,7 @@ def get_dir_art(diskimage):
     """
     artdisk = d64util.DiskImage(diskimage)
     art = []
-    for entry in artdisk.read_directory_entries(include_invisible=False):
+    for entry in artdisk.directory_read_entries(include_invisible=False):
         bin30 = entry[1]    # [0] would be index, we only want the data
         art.append(bin30[3:19]) # and we only keep the name field
     print("Found %d entries of dir art." % len(art))
@@ -24,7 +24,7 @@ def apply_dir_art(art, targetdisk, targetskip, use_all_art, add_spacer):
     img = d64util.DiskImage(targetdisk, d64util.ImgMode.WRITEBACK)
     # get current directory contents
     olddir = []
-    for entry in img.read_directory_entries(include_invisible=False):
+    for entry in img.directory_read_entries(include_invisible=False):
         bin30 = entry[1]    # [0] would be index, we only want the data
         olddir.append(bin30)
     print("Original directory has %d entries." % len(olddir))
@@ -58,7 +58,7 @@ def apply_dir_art(art, targetdisk, targetskip, use_all_art, add_spacer):
         while len(art):
             # create dummy entries for dir art
             art_entry = art.pop(0)
-            dir_entry = img.build_dummy_dir_entry(art_entry[:16])   # all 16 chars of art
+            dir_entry = img.direntry_make_dummy(art_entry[:16]) # all 16 chars of art
             applied_art += 1
             newdir.append(dir_entry)
         print("Applied all %d entries of dir art." % applied_art)
@@ -67,13 +67,13 @@ def apply_dir_art(art, targetdisk, targetskip, use_all_art, add_spacer):
     # now we are done with dir art!
     # part 4: if we still have original directory entries left, add spacer:
     if len(olddir) and add_spacer:
-        newdir.append(img.build_dummy_dir_entry(b"----------------"))
-        #newdir.append(img.build_dummy_dir_entry(b"----------------"))
-        #newdir.append(img.build_dummy_dir_entry(b"----------------"))
+        newdir.append(img.direntry_make_dummy(b"----------------"))
+        #newdir.append(img.direntry_make_dummy(b"----------------"))
+        #newdir.append(img.direntry_make_dummy(b"----------------"))
     # part 5: append remaining original directory entries unchanged
     newdir.extend(olddir)
     # part 6: write new directory
-    img.write_directory(newdir)
+    img.directory_write(newdir)
     img.writeback() # flush to file
     # ...aaand we're done!
 
