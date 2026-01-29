@@ -496,53 +496,41 @@ class d64(object):
         # TODO - compare totals to maximum for this track?
         #raise Exception("BAM is corrupt, totals do not match bitmap.")
 
-    # TODO - simplify for non-1571 and give 1571 its own version!
-    # TODO - rename because there is also a method without leading '_'!
-    def _try_to_allocate(self, wanted_ts, entry, totals_offset_step, totals_ts, bitmaps_offset_step, bitmaps_ts=None, exact=True):
+    # TODO - rename?
+    def _try_to_allocate(self, wanted_ts, bam_ts, table_offset, step, entry, exact=True):
         """
         Helper function to allocate a single block in BAM.
         If block is available, allocate it and return t/s.
         If block is not available, return None.
 
         wanted_ts: track and sector to allocate
-        entry: which one of totals/bitmaps to use
-        totals_offset_step: where to find totals
-        totals_ts: track and sector where totals are stored
-        bitmaps_offset_step: where to find bitmaps
-        bitmaps_ts: track and sector where bitmaps are stored (if different from totals_ts)
+        bam_ts: track and sector where totals/bitmaps are stored
+        table_offset: where totals and bitmaps start in bam block
+        step: size of each entry
+        entry: which entry to process
         exact: if False, function may allocate and return a different sector from this track
         """
-        # process args
         track, wanted_sector = wanted_ts
-        totals_offset, totals_step = totals_offset_step
-        totals_block = self.read_ts(totals_ts)
-        bitmaps_offset, bitmaps_step = bitmaps_offset_step
-        if bitmaps_ts == None:
-            bitmaps_block = totals_block
-        else:
-            bitmaps_block = self.read_ts(bitmaps_ts)
+        bam_block = self.read_ts(bam_ts)
         # calculate offsets
-        bitmaps_offset += entry * bitmaps_step
-        totals_offset += entry * totals_step
+        totals_offset = start_offset + entry * step
         cand_sector = wanted_sector # we start the search with the wanted sector...
         num_sectors = self.sectors_of_track(track)  # ...and this is where we wrap around
         while True:
             byte_offset, bit_value = self.bam_offset_and_bit(cand_sector)
-            bitmap_byte_offset = bitmaps_offset + byte_offset
+            bitmap_byte_offset = totals_offset + 1 + byte_offset
             # bit clear: sector is not available, i.e. is allocated or does not even exist
             # bit set: sector is available, i.e. can be allocated
-            available = bool(bitmaps_block[bitmap_byte_offset] & bit_value)
+            available = bool(bam_block[bitmap_byte_offset] & bit_value)
             if available:
                 # allocate block
-                bitmaps_block[bitmap_byte_offset] &= (255 - bit_value)
-                if totals_block[totals_offset]:
-                    totals_block[totals_offset] -= 1
+                bam_block[bitmap_byte_offset] &= (255 - bit_value)
+                if bam_block[totals_offset]:
+                    bam_block[totals_offset] -= 1
                 else:
                     raise Exception("BAM is corrupt, totals do not match bitmap.")
-                # write bam block(s)
-                self.write_ts(totals_ts, totals_block)
-                if bitmaps_block != totals_block:
-                    self.write_ts(bitmaps_ts, bitmaps_block)
+                # write bam block
+                self.write_ts(bam_ts, bam_block)
                 _debug(2, "Allocated t/s", track, cand_sector)
                 return track, cand_sector   # block has been allocated
             _debug(3, "t/s", track, cand_sector, "is not available")
@@ -561,6 +549,15 @@ class d64(object):
 
     def _virtualfn(self):
         raise Exception("BUG: A virtual function was called!")
+
+    def try_to_allocate(self, track, sector, exact):
+        """
+        Helper function to allocate a single block in BAM.
+        If block is available, allocate it and return t/s.
+        If block is not available, return None.
+        exact: if False, function may allocate and return a different sector from this track.
+        """
+        self._virtualfn()
 
     def release_blocks(self, set_of_ts):
         """
@@ -1060,7 +1057,7 @@ class _1541(_dos2p1):
             self.write_ts((18, 0), bamblock)
 
     def try_to_allocate(self, track, sector, exact):
-        return self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)
+        return self._try_to_allocate((track, sector), (18, 0), 4, 4, track - 1, exact=exact)
 
 ################################################################################
 # info taken from: http://mhv.bplaced.net/diskettenformate.html
@@ -1117,9 +1114,9 @@ class _8050(_dos2p1):
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 50:
-            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
+            ts = self._try_to_allocate((track, sector), (38, 0), 6, 5, track - 1, exact=exact)
         else:
-            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
+            ts = self._try_to_allocate((track, sector), (38, 3), 6, 5, track - 51, exact=exact)
         return ts
 
 ################################################################################
@@ -1172,13 +1169,13 @@ class _8250(_8050):
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 50:
-            ts = self._try_to_allocate((track, sector), track - 1, (6, 5), (38, 0), (7, 5), exact=exact)
+            ts = self._try_to_allocate((track, sector), (38, 0), 6, 5, track - 1, exact=exact)
         elif track <= 100:
-            ts = self._try_to_allocate((track, sector), track - 51, (6, 5), (38, 3), (7, 5), exact=exact)
+            ts = self._try_to_allocate((track, sector), (38, 3), 6, 5, track - 51, exact=exact)
         elif track <= 150:
-            ts = self._try_to_allocate((track, sector), track - 101, (6, 5), (38, 6), (7, 5), exact=exact)
+            ts = self._try_to_allocate((track, sector), (38, 6), 6, 5, track - 101, exact=exact)
         else:
-            ts = self._try_to_allocate((track, sector), track - 151, (6, 5), (38, 9), (7, 5), exact=exact)
+            ts = self._try_to_allocate((track, sector), (38, 9), 6, 5, track - 151, exact=exact)
         return ts
 
 ################################################################################
@@ -1276,8 +1273,8 @@ class _1571(_1541):
     def release_1571_side2_block(self, ts, totals_block, bitmaps_block):
         """
         Helper function to release a single block in BAM. This function is only
-        used for blocks on second side of 1571 because their BAM split over two
-        blocks.
+        used for blocks on second side of 1571 because their BAM is split over
+        two blocks.
 
         ts: track and sector of block to release
         totals_block: block with totals (t18s0)
@@ -1300,6 +1297,59 @@ class _1571(_1541):
         # TODO - compare totals to maximum for this track?
         #raise Exception("BAM is corrupt, totals do not match bitmap.")
 
+    def allocate_1571_side2_block(self, track, wanted_sector, exact):
+        """
+        Helper function to allocate a single block in BAM. This function is only
+        used for blocks on second side of 1571 because their BAM is split over
+        two blocks.
+        If block is available, allocate it and return t/s.
+        If block is not available, return None.
+
+        track, wanted_sector: track and sector of block to allocate
+        totals_block: block with totals (t18s0)
+        exact: if False, function may allocate and return a different sector from this track
+        """
+        # read bam blocks
+        totals_block = self.read_ts((18, 0))
+        bitmaps_block = self.read_ts((53, 0))
+        # calculate offsets
+        entry = track - 36  # zero-based offset, so subtract 36 instead of 35
+        totals_offset = 221 + entry
+        bitmaps_offset = 3 * entry
+        cand_sector = wanted_sector # we start the search with the wanted sector...
+        num_sectors = self.sectors_of_track(track)  # ...and this is where we wrap around
+        while True:
+            byte_offset, bit_value = self.bam_offset_and_bit(cand_sector)
+            bitmap_byte_offset = bitmaps_offset + byte_offset
+            # bit clear: sector is not available, i.e. is allocated or does not even exist
+            # bit set: sector is available, i.e. can be allocated
+            available = bool(bitmaps_block[bitmap_byte_offset] & bit_value)
+            if available:
+                # allocate block
+                bitmaps_block[bitmap_byte_offset] &= (255 - bit_value)
+                if totals_block[totals_offset]:
+                    totals_block[totals_offset] -= 1
+                else:
+                    raise Exception("BAM is corrupt, totals do not match bitmap.")
+                # write bam blocks
+                self.write_ts((18, 0), totals_block)
+                self.write_ts((53, 0), bitmaps_block)
+                _debug(2, "Allocated t/s", track, cand_sector)
+                return track, cand_sector   # block has been allocated
+            _debug(3, "t/s", track, cand_sector, "is not available")
+            if exact:
+                break   # fail (the wanted sector is not available)
+            # try the next sector on this track:
+            cand_sector += 1
+            # if out of range, wrap around:
+            if cand_sector >= num_sectors:
+                cand_sector -= num_sectors
+            # all done?
+            if cand_sector == wanted_sector:
+                break   # fail (no sectors left on this track)
+        # if we arrive here, the request could not be satisfied
+        return None # failure
+
     def release_blocks(self, set_of_ts):
         bamblock180 = self.read_ts((18, 0))
         bamblock530 = self.read_ts((53, 0))
@@ -1320,9 +1370,9 @@ class _1571(_1541):
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 35:
-            ts = self._try_to_allocate((track, sector), track - 1, (4, 4), (18, 0), (5, 4), exact=exact)    # all at t18s0
+            ts = self._try_to_allocate((track, sector), (18, 0), 4, 4, track - 1, exact=exact)  # all at t18s0
         else:
-            ts = self._try_to_allocate((track, sector), track - 36, (221, 1), (18, 0), (0, 3), (53, 0), exact=exact)    # totals at t18s0, bitmaps at t53s0
+            ts = self.allocate_1571_side2_block(track, sector, exact)   # totals at t18s0, bitmaps at t53s0
         return ts
 
 ################################################################################
@@ -1480,9 +1530,9 @@ class _1581(d64):
 
     def try_to_allocate(self, track, sector, exact):
         if track <= 40:
-            ts = self._try_to_allocate((track, sector), track - 1, (16, 6), (40, 1), (17, 6), exact=exact)
+            ts = self._try_to_allocate((track, sector), (40, 1), 16, 6, track - 1, exact=exact)
         else:
-            ts = self._try_to_allocate((track, sector), track - 41, (16, 6), (40, 2), (17, 6), exact=exact)
+            ts = self._try_to_allocate((track, sector), (40, 2), 16, 6, track - 41, exact=exact)
         return ts
 
     def enter(self, which):
@@ -1520,7 +1570,7 @@ class _cmdnative(d64):
 #    maxtrack = -1   # dynamic!
     track_length_changes = {1: 256}  # all tracks have 256 sectors
     header_ts_and_offset = (1, 1), 4   # where to find diskname and five-byte "pseudo id"
-#    bam_blocks = [(1, 2), (1, 3)]   # ...up and including (1, 33)!
+#    bam_blocks = [(1, 2), (1, 3)]   # ...up to and including (1, 33)!
     bam_start_size_maxperblock = (0, 32, 8)
     directory_ts = (1, 34)
 #    std_max_dir_entries = -1    # for writing directory (dynamic!)
@@ -1589,6 +1639,8 @@ class _cmdnative(d64):
         # bitmap bytes are little-endian (just like in all other formats), but
         # most significant bit goes first (which differs from all other formats):
         return sector >> 3, 128 >> (sector & 7)
+
+    # TODO: add block_allocate and block_free methods!
 
     def enter(self, which):
         # enter CMD-style sub-directory
