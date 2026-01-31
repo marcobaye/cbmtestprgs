@@ -9,7 +9,6 @@ def show_help():
     #d64.py addfile IMAGE FILE       add file to image
     #d64.py extract [--full] [--p00] IMAGE [FILENUM]     extract files from disc image
     #d64.py create --typeswitches --force IMG.D64
-    #d64.py addfile --forcetype --relsize IMG.D64 FILE
     #d64.py check IMG.D64
     print("""
 Usage:
@@ -18,6 +17,7 @@ Usage:
     d64.py list                     list supported image formats
     d64.py [dir] IMAGE              show directory
     d64.py checkfile IMAGE FILENUM  check blocks of file
+    d64.py add IMAGE FILE           add file to image
 """)
 
 def mode_checkfile():
@@ -31,6 +31,35 @@ The file must be specified by its directory index.
     args = parser.parse_args(sys.argv[2:])
     image = d64util.DiskImage(args.image)
     image.check_file(args.file_index)
+
+def mode_delete():
+    parser = argparse.ArgumentParser(allow_abbrev = False, description =
+"""
+This mode deletes a single file from the image.
+The file must be specified by its directory index.
+""")
+    parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
+    parser.add_argument("file_index", metavar="FILENUM", type=int, help="Dir index of file to delete.")
+    args = parser.parse_args(sys.argv[2:])
+    image = d64util.DiskImage(args.image, d64util.ImgMode.WRITEBACK)
+    image.delete_file(args.file_index)
+    image.writeback()   # flush to file
+
+def mode_add():
+    parser = argparse.ArgumentParser(allow_abbrev = False, description =
+"""
+This mode adds a file to the image.
+""")
+    parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
+    parser.add_argument("file", metavar="FILE", help="File to add to image.")
+    # TODO: add "--forcetype"
+    # TODO: add "--relsize"
+    args = parser.parse_args(sys.argv[2:])
+    image = d64util.DiskImage(args.image, d64util.ImgMode.WRITEBACK)
+    file = open(args.file, "rb")
+    filebody = file.read(16 * 1024 * 1024)  # 16 MiB ought to be enough for anybody
+    image.add_file(args.file, filebody)
+    image.writeback()   # flush to file
 
 def one_arg(arg):
     if arg in ("help", "-h"):
@@ -56,12 +85,14 @@ def _main():
             not_yet()
         elif mode == "create":
             not_yet()
-        elif mode == "addfile":
-            not_yet()
-        elif mode == "extract":
-            not_yet()
         elif mode == "checkfile":
             mode_checkfile()
+        elif mode == "delete":
+            mode_delete()
+        elif mode == "add":
+            mode_add()
+        elif mode == "extract":
+            not_yet()
         else:
             d64util._main()
 

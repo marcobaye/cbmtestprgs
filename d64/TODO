@@ -1,4 +1,7 @@
 
+BUG: deleting a dummy dir entry (0 "----------------" PRG) will result in
+freeing the directory because that is where these entries mostly point to.
+
 
 maybe add a way to enter a disk image inside a disk image? needed?
 

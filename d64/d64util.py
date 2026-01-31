@@ -15,6 +15,10 @@ def _debug(minlevel, *unnamed, **named):
     if _debuglevel >= minlevel:
         print("debug%d:" % minlevel, *unnamed, **named)
 
+def _ceil_div(a, b):
+    """ Divide and round up if remainder is nonzero """
+    return -(a // -b)
+
 def _popcount(integer):
     """Helper function to check bit fields in BAM."""
     return bin(integer).count("1")
@@ -227,6 +231,7 @@ class d64(object):
         std_directory_interleave: block interleave for directory
         std_file_interleave: block interleave for files
         filetypes: dict of supported file types
+        use_super_side_sector: REL files can be larger than 720+6 blocks
     """
     mintrack = 1    # only D9060/D9090 differ, they use 0
 
@@ -468,7 +473,7 @@ class d64(object):
             sys.exit("BUG: inconsistent number of tracks when reading free blocks!")
         return d
 
-    def bam_offset_and_bit(self, sector):
+    def _bam_offset_and_bit(self, sector):
         """
         Convert sector number to byte offset and bit value for accessing BAM bitmap.
         """
@@ -492,7 +497,7 @@ class d64(object):
         track, sector = ts
         # calculate offsets
         totals_offset = bam_offset + (track - first_track) * size
-        byte_offset, bit_value = self.bam_offset_and_bit(sector)
+        byte_offset, bit_value = self._bam_offset_and_bit(sector)
         bitmap_offset = totals_offset + 1 + byte_offset # bitmaps start after totals -> +1
         # check/release:
         if bam_block[bitmap_offset] & bit_value:
@@ -522,11 +527,11 @@ class d64(object):
         track, wanted_sector = wanted_ts
         bam_block = self.block_read(bam_ts)
         # calculate offsets
-        totals_offset = start_offset + entry * step
+        totals_offset = table_offset + entry * step
         cand_sector = wanted_sector # we start the search with the wanted sector...
         num_sectors = self.sectors_of_track(track)  # ...and this is where we wrap around
         while True:
-            byte_offset, bit_value = self.bam_offset_and_bit(cand_sector)
+            byte_offset, bit_value = self._bam_offset_and_bit(cand_sector)
             bitmap_byte_offset = totals_offset + 1 + byte_offset
             # bit clear: sector is not available, i.e. is allocated or does not even exist
             # bit set: sector is available, i.e. can be allocated
@@ -629,7 +634,7 @@ class d64(object):
 
     def _directory_iter(self, start_ts):
         """
-        Return directory entries as 30-byte sequences.
+        Return directory entries as (30-byte sequence, wherefound) tuples.
         """
         for ts, block in self.linkptrs_follow(start_ts):
             if block[0] == 0:
@@ -638,28 +643,28 @@ class d64(object):
                    print("WARNING: sector value of final dir block is %d instead of 255!" % block[1], file=sys.stderr)
             readidx = 2
             for i in range(8):
-                yield block[readidx:readidx + 30]
+                yield block[readidx:readidx + 30], (ts, readidx)
                 readidx += 32
 
     def directory_read_entries(self, include_invisible=False):
         """
         Return directory entries as tuples:
-        (index, raw entry (30 bytes), tuple might grow in future...)
+        (index, raw entry (30 bytes), location, tuple might grow in future...)
         Setting include_invisible to True yields even the empty entries.
         """
         entry_number = 0    # index, so caller can unambiguously reference each entry
         # process directory
-        for bin30 in self._directory_iter(self.directory_ts):
+        for bin30, location in self._directory_iter(self.directory_ts):
             if bin30[0] or include_invisible:
-                yield entry_number, bin30   # CAUTION, maybe more fields will get added in future!
+                yield entry_number, bin30, location # CAUTION, maybe more fields will get added in future!
             entry_number += 1
         # process GEOS "border block", if there is one:
         borderblock_ts = self.geos_get_border_block_ts()
         if borderblock_ts:
             _debug(1, "Contents of GEOS border block:")
-            for bin30 in self._directory_iter(borderblock_ts):
+            for bin30, location in self._directory_iter(borderblock_ts):
                 if bin30[0] or include_invisible:
-                    yield entry_number, bin30   # CAUTION, maybe more fields will get added in future!
+                    yield entry_number, bin30, location # CAUTION, maybe more fields will get added in future!
                 entry_number += 1
 
     def direntry_get(self, which):
@@ -774,13 +779,14 @@ class d64(object):
         # and then there are 11 bytes for various (DOS/GEOS) purposes, all 0 here
         return entry
 
-    def bam_get_new_start_block(self):
+    def _bam_get_new_start_block(self):
         """
         Find and allocate a block for a new file.
         Return ts or raise DiskFullException.
         """
         # TODO: check if there are any free blocks at all? or search anyway to be safe?
         # start next to directory track, alternating between lower and higher tracks:
+# FIXME! "interleave sides" optimization for 8250 and 1571 should apply here as well!
         lower = self.directory_ts[0] - 1
         higher = self.directory_ts[0] + 1
         while True:
@@ -824,22 +830,22 @@ class d64(object):
 
     def bam_get_additional_block(self, prev_ts, interleave=None):
         """
-        Find and allocate a new block after given block.
+        Find and allocate a new block after given t/s tuple.
+        If given t/s is None, find a block near directory (as CBM DOS does it).
         Return ts or raise DiskFullException.
         """
+        if prev_ts is None:
+            return self._bam_get_new_start_block()
         ts = self.bam_get_block_on_track(prev_ts, interleave)
         if ts is not None:
             return ts
-        raise Exception("not implemented!")
-        # TODO:
-        # if track is lower than directory track, search lower tracks
-        # if track is higher than directory track, search higher tracks
-        # if track limit reached, search the other direction
-        # but what is the _exact_ algorithm used by the DOS?
-        # if we start on t10 and find no free blocks on t9..t1, do we start
-        # looking upward from t11? or do start looking upward from t18 (dir)
-        # and only check tracks 17..11 if higher tracks are exhausted?
-        # check with real CBM DOS!
+        raise Exception("Searching other tracks is not yet implemented!")
+        # TODO: 1541 DOS does it this way:
+        # if track is lower than directory track, search lower tracks.
+        # if track is higher than directory track, search higher tracks.
+        # if track limit reached, search on other side of directory.
+        # give up when reaching track limit for the third time.
+# FIXME! "interleave sides" optimization for 8250 and 1571 should apply here as well!
 
     def linkptrs_release_all(self, start_ts):
         """
@@ -963,11 +969,47 @@ class d64(object):
             self.check_side_sectors(std_chain, second_chain, record_length)
         #
 
+    def delete_file(self, index):
+        """
+        release all blocks of file and remove its directory entry
+        """
+        bin30 = self.direntry_get(index)
+        # read fields
+        cbm_type = bin30[0]
+        t_s = bin30[1], bin30[2]
+        #file_name = bin30[3:19]
+        second_t_s = bin30[19], bin30[20]   # t/s of side sector (REL) or info block (GEOS)
+        #record_length = bin30[21]   # GEOS: 0=normal file, 1=VLIR file
+        #geos_type = bin30[22:23]
+        #block_count = int.from_bytes(bin30[28:30], "little")
+        if cbm_type == 0:
+            print("Directory entry is unused.")
+            return
+        # std file body:
+        print("Reading block chain:", end="")
+        chain = list(self.linkptrs_follow(t_s, display=True, include_blocks=False))
+        if second_t_s[0]:
+            # side sectors:
+            print("Reading side sector chain:", end="")
+            chain += list(self.linkptrs_follow(second_t_s, display=True, include_blocks=False))
+        print("Releasing blocks.")
+        self.bam_release_blocks(chain)
+        # remove dir entry
+        for entry in self.directory_read_entries():
+            if entry[0] == index:
+                # entry[1] is actual bin30 entry
+                ts, offset = entry[2]
+                dirblock = self.block_read(ts)
+                dirblock[offset] = 0    # mark entry as free
+                self.block_write(ts, dirblock)
+                return
+        raise Exception("This cannot happen, dir entry was found before but not now?!")
+
     # TODO: maybe add optional args for
     #   - use alternative sector interleave
     #   - interleave sides on 1571 (and 8250?)
     #   - only make a super side sector if needed
-    def allocate_file(filesize, record_length=None):
+    def allocate_file(self, filesize, record_length=None, interleave=None):
         """
         allocate enough blocks so a file of the given size can be stored.
         if record_length is given, create a chain of side sectors pointing to
@@ -975,26 +1017,45 @@ class d64(object):
         return a tuple: first item is list of track/sector tuples so caller can
         do the actual block writes, second item is t/s of first side sector.
         """
-        data_block_count = div_round_up(filesize, 254)  # FIXME - write helper fn!
+        # first check how many blocks this file would need:
+        data_block_count = _ceil_div(filesize, 254)
         total_block_count = data_block_count
         if record_length is not None:
             if filesize % record_length != 0:
                 raise Exception(f"File size ({filesize}) is not a multiple of record length ({record_length}).")
-            side_sector_count = div_round_up(data_block_count, 120)
+            side_sector_count = _ceil_div(data_block_count, 120)
             total_block_count += side_sector_count
-            #if side_sector_count > 6:
-            if self.supports_sss:
+            if self.use_super_side_sector:
                 total_block_count += 1
-                create_sss = True
-            else:
-                create_sss = False
-        if total_block_count > self.get_free_blocks():
-            raise Exception("Not enough free blocks to add file.")
-        print("TODO: finish writing this function. ;)")
-        # call new function to get first data block
-        # loop: get ts for data blocks, at the correct times get ts for ss and sss.
-        # after loop, write data to sss and ss.
+        # does it fit?
+        free_blocks = self.bam_read_free_blocks()
+        if total_block_count > free_blocks["shown"]:
+            raise DiskFullException()   # "Not enough free blocks to add file."
+        # allocate blocks
+        data_blocks = []
+        side_sectors = []
+        super_side_sector = None
+        ts = None
+        for ii in range(data_block_count):
+            ts = self.bam_get_additional_block(ts, interleave)
+            data_blocks.append(ts)
+            # did we just start a fresh batch of 120 data blocks?
+            if ii % 120 == 0:
+                if record_length is not None:
+                    side_sectors.append(self.bam_get_additional_block(ts, interleave))
+                    # do we want a super side sector?
+                    if self.use_super_side_sector and super_side_sector is None:
+                        super_side_sector = self.bam_get_additional_block(ts, interleave)
+        # TODO:
+        # write data to sss and ss.
         # return list of all data ts and ts of first ss.
+
+    def add_file(self, name, body, record_length=None, interleave=None):
+        """
+        add file to image
+        """
+        tup = self.allocate_file(len(body), record_length, interleave)
+        print("not finished")
 
 ################################################################################
 # CBM DOS 1.0 disk format, as used in non-upgraded CBM 2040 and CBM 3040 units.
@@ -1017,6 +1078,7 @@ class _dos1(d64):
     #std_directory_interleave =
     #std_file_interleave =
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR"}   # decoded file types
+    use_super_side_sector = False
 
 ################################################################################
 # CBM DOS 2.1 was used in CBM 4040 units and in upgraded 2040/3040 units.
@@ -1027,6 +1089,7 @@ class _dos1(d64):
 
 class _dos2p1(d64):
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL" }    # decoded file types
+    use_super_side_sector = False
     # this class does not contain anything else because the disk format is the
     # same as the one that was later used by 1541 and friends, so see below.
     # the only reason for this class is so both "1541" and "8050" can inherit
@@ -1144,6 +1207,7 @@ class _8250(_8050):
     maxtrack = 154
     track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
     bam_blocks = [(38, 0), (38, 3), (38, 6), (38, 9)]
+    use_super_side_sector = True
 
     def bam_release_blocks(self, set_of_ts):
         bamblock380 = self.block_read((38, 0))
@@ -1295,7 +1359,7 @@ class _1571(_1541):
         entry_index = track - 36    # this fn handles logical tracks 36..70
         totals_offset = 221 + entry_index   # table of totals is located at end of t18s0
         # bitmaps (three bytes each) are at start of t53s0:
-        byte_offset, bit_value = self.bam_offset_and_bit(sector)
+        byte_offset, bit_value = self._bam_offset_and_bit(sector)
         bitmap_offset = entry_index * 3 + byte_offset
         # check/release:
         if bitmaps_block[bitmap_offset] & bit_value:
@@ -1328,7 +1392,7 @@ class _1571(_1541):
         cand_sector = wanted_sector # we start the search with the wanted sector...
         num_sectors = self.sectors_of_track(track)  # ...and this is where we wrap around
         while True:
-            byte_offset, bit_value = self.bam_offset_and_bit(cand_sector)
+            byte_offset, bit_value = self._bam_offset_and_bit(cand_sector)
             bitmap_byte_offset = bitmaps_offset + byte_offset
             # bit clear: sector is not available, i.e. is allocated or does not even exist
             # bit set: sector is available, i.e. can be allocated
@@ -1409,6 +1473,7 @@ class _1571(_1541):
 class _d90(_dos2p1):
     mintrack = 0
     maxtrack = 152
+    use_super_side_sector = True    # this is just a guess...
 
     def _populate(self, imagefile):
         # first call parent class
@@ -1519,6 +1584,7 @@ class _1581(d64):
     std_directory_interleave = 1    # 1581 uses interleave 1 because of track cache
     std_file_interleave = 1 # 1581 uses interleave 1 because of track cache
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL", 5:b"CBM" }  # decoded file types
+    use_super_side_sector = True
 
     def bam_release_blocks(self, set_of_ts):
         bamblock1 = self.block_read((40, 1))
@@ -1586,6 +1652,7 @@ class _cmdnative(d64):
     std_directory_interleave = 1
     std_file_interleave = 1
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL", 6:b"DIR" }  # decoded file types
+    use_super_side_sector = True
 
     def __init__(self, filesize):
         self.maxtrack = (filesize + 65535) // 65536 # we need to calculate number of tracks
@@ -1641,7 +1708,7 @@ class _cmdnative(d64):
         d["shown"] = sum - reserved_area_sum
         return d
 
-    def bam_offset_and_bit(self, sector):
+    def _bam_offset_and_bit(self, sector):
         """
         Convert sector number to byte offset and bit value for accessing BAM bitmap.
         """
