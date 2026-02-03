@@ -1108,7 +1108,7 @@ class _dos2p1(d64):
 
 class _1541(_dos2p1):
     name = "1541"
-    blocks_total = 683
+    blocks_total = 683  # 664 free
     maxtrack = 35
     track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17}
     header_ts_and_offset = (18, 0), 144 # where to find diskname and five-byte "pseudo id"
@@ -1641,7 +1641,9 @@ class _1581(d64):
 
 class _cmdnative(d64):
     name = "CMD native"
-    blocks_total = -1   # dynamic, multiple of 256, 1+1+32+1 are always allocated
+    blocks_total = -1   # dynamic, multiple of 256
+    # first 1+1+32+1 blocks are always allocated (bootblock, header, bam blocks, first dir block)
+    # the first 64 blocks are not included in "blocks free" number (reserved for root dir)
 #    maxtrack = -1   # dynamic!
     track_length_changes = {1: 256}  # all tracks have 256 sectors
     header_ts_and_offset = (1, 1), 4   # where to find diskname and five-byte "pseudo id"
@@ -1655,7 +1657,7 @@ class _cmdnative(d64):
     use_super_side_sector = True
 
     def __init__(self, filesize):
-        self.maxtrack = (filesize + 65535) // 65536 # we need to calculate number of tracks
+        self.maxtrack = _ceil_div(filesize, 65536)  # each track is 64 KiB
         self.blocks_total = filesize // 256
         self.bam_counters = dict()
 
@@ -1857,19 +1859,23 @@ class _cmdpartitionable(d64):
 
 class _cmdfd1m(_cmdpartitionable):
     name = "CMD DD partitioned"
-    blocks_total = 3240
+    blocks_total = 3240 # 3200 for native partition plus 40 in extra track to hold partition table
+    # 3008 free (the first 64 are allocated/reserved for bootblock/bam/rootdir,
+    # the last 128 are unused because 3200 is not a multiple of 256)
     track_length_changes = {1: 40}  # all tracks have 40 blocks (2 sides * 5 sectors * 1024 byte)
     partition = (80 * 40 + 8, 4)
 
 class _cmdfd2m(_cmdpartitionable):
     name = "CMD FD-2000 partitioned"
-    blocks_total = 6480
+    blocks_total = 6480 # 6400 for native partition plus 80 in extra track to hold partition table
+    # 6336 free (the first 64 are allocated/reserved for bootblock/bam/rootdir)
     track_length_changes = {1: 80}  # all tracks have 80 blocks (2 sides * 10 sectors * 1024 byte)
     partition = (80 * 80 + 8, 4)
 
 class _cmdfd4m(_cmdpartitionable):
     name = "CMD FD-4000 partitioned"
-    blocks_total = 12960
+    blocks_total = 12960    # 12800 for native partition plus 160 in extra track to hold partition table
+    # 12736 free (the first 64 are allocated/reserved for bootblock/bam/rootdir)
     track_length_changes = {1: 160} # all tracks have 160 blocks (2 sides * 20 sectors * 1024 byte)
     partition = (80 * 160 + 8, 4)
 
