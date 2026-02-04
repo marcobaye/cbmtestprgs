@@ -8,7 +8,6 @@ def show_help():
     #d64.py create IMAGE             create new empty disc image
     #d64.py addfile IMAGE FILE       add file to image
     #d64.py extract [--full] [--p00] IMAGE [FILENUM]     extract files from disc image
-    #d64.py create --typeswitches --force IMG.D64
     #d64.py check IMG.D64
     print("""
 Usage:
@@ -16,9 +15,29 @@ Usage:
     d64.py help [MODE]              show help about mode
     d64.py list                     list supported image formats
     d64.py [dir] IMAGE              show directory
+    d64.py create IMAGE             create new image file
     d64.py checkfile IMAGE FILENUM  check blocks of file
     d64.py add IMAGE FILE           add file to image
 """)
+
+def mode_create():
+    #sys.argv[1] += " create"
+    parser = argparse.ArgumentParser(allow_abbrev = False, description =
+"""
+This mode creates a new empty disk image file.
+""")
+    # TODO: add "create" string so it is included in help message.
+    #parser.add_argument("create", action=None, help="mode")
+    parser.add_argument("image", metavar="IMAGEFILE", help="disk image file to create")
+    parser.add_argument("-t", "--type", metavar="TYPE", type=str, default=None, help="type of image")
+    parser.add_argument("-f", "--force", action="store_true", help="overwrite existing file")
+    parser.add_argument("-e", "--error", action="store_true", help="create with error chunk")
+    parser.add_argument("--tracks", metavar="TRACKS", help="number of tracks for CMD native partition")
+    args = parser.parse_args(sys.argv[2:])
+    #print("image:", args.image)
+    #print("type:", args.type)
+    #print("force:", args.force)
+    print("not yet")
 
 def mode_checkfile():
     parser = argparse.ArgumentParser(allow_abbrev = False, description =
@@ -52,7 +71,7 @@ This mode adds a file to the image.
 """)
     parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
     parser.add_argument("file", metavar="FILE", help="File to add to image.")
-    # TODO: add "--forcetype"
+    # TODO: add "--forcefiletype"
     # TODO: add "--relsize"
     args = parser.parse_args(sys.argv[2:])
     image = d64util.DiskImage(args.image, d64util.ImgMode.WRITEBACK)
@@ -84,7 +103,7 @@ def _main():
         elif mode == "dir":
             not_yet()
         elif mode == "create":
-            not_yet()
+            mode_create()
         elif mode == "checkfile":
             mode_checkfile()
         elif mode == "delete":
