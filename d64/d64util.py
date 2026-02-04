@@ -213,27 +213,29 @@ class imagefile(object):
 class d64(object):
     """
     This class describes a cbm disc image. There are subclasses for 1541,
-        40track, 1571, 1581, ...
-
-    Constants:
-        name: the name of the format, for example "1581"
-        blocks_total: the number of 256-byte blocks per image file
-        mintrack: lowest track number (1)
-        maxtrack: highest track number
-        track_length_changes: dict with "new" sectors-per-track value
-        header_ts_and_offset: where to find disc name and five-byte "pseudo id"
-            this is a 2-tuple: [0] is ts tuple, [1] is offset value
-        bam_blocks: list of ts values where block availability map is held
-        bam_start_size_maxperblock: start offset in bam blocks, size of
-            entries, max number of entries per block
-        directory_ts: track and sector of first directory block
-        std_max_dir_entries: maximum number of directory entries
-        std_directory_interleave: block interleave for directory
-        std_file_interleave: block interleave for files
-        filetypes: dict of supported file types
-        use_super_side_sector: REL files can be larger than 720+6 blocks
+    40track, 1571, 1581, ...
     """
+    # Constants:
+    #    name: the name of the format, for example "1581"
+    #    blocks_total: the number of 256-byte blocks per image file
+    #    mintrack: lowest track number (1)
+    #    maxtrack: highest track number
+    #    track_length_changes: dict with "new" sectors-per-track value
+    #    header_ts_and_offset: where to find disc name and five-byte "pseudo id"
+    #        this is a 2-tuple: [0] is ts tuple, [1] is offset value
+    #    bam_blocks: list of ts values where block availability map is held
+    #    bam_start_size_maxperblock: start offset in bam blocks, size of
+    #        entries, max number of entries per block
+    #    directory_ts: track and sector of first directory block
+    #    std_max_dir_entries: maximum number of directory entries
+    #    std_directory_interleave: block interleave for directory
+    #    std_file_interleave: block interleave for files
+    #    filetypes: dict of supported file types
+    #    use_super_side_sector: REL files can be larger than 720+6 blocks
     mintrack = 1    # only D9060/D9090 differ, they use 0
+    # used for optional 1571/8250 optimization:
+    allow_interleaved_sides = False # this flag says whether the var below can be changed
+    sides_interleave    = 0 # track diff between sides
 
     def __init__(self):
         if "blocks_total" not in self.__dir__():
@@ -784,9 +786,13 @@ class d64(object):
         Find and allocate a block for a new file.
         Return ts or raise DiskFullException.
         """
-        # TODO: check if there are any free blocks at all? or search anyway to be safe?
+        if self.sides_interleave:
+            # optimization for 8250: first check dir track on second side
+            # (won't work on 1571 because track 53 is completely allocated):
+            ts = self.bam_allocate_block(self.directory_ts[0] + self.sides_interleave, 0, exact=False)
+            if ts is not None:
+                return ts
         # start next to directory track, alternating between lower and higher tracks:
-# FIXME! "interleave sides" optimization for 8250 and 1571 should apply here as well!
         lower = self.directory_ts[0] - 1
         higher = self.directory_ts[0] + 1
         while True:
@@ -796,12 +802,22 @@ class d64(object):
                 ts = self.bam_allocate_block(lower, 0, exact=False)
                 if ts is not None:
                     return ts
+                if self.sides_interleave:
+                    # optimization for 1571/8250: check second side:
+                    ts = self.bam_allocate_block(lower + self.sides_interleave, 0, exact=False)
+                    if ts is not None:
+                        return ts
                 lower -= 1
             if higher <= self.maxtrack:
                 checks += 1
                 ts = self.bam_allocate_block(higher, 0, exact=False)
                 if ts is not None:
                     return ts
+                if self.sides_interleave and higher <= self.sides_interleave:
+                    # optimization for 1571/8250: check second side:
+                    ts = self.bam_allocate_block(higher + self.sides_interleave, 0, exact=False)
+                    if ts is not None:
+                        return ts
                 higher += 1
             # if tracks are exhausted in both directions, give up:
             if checks == 0:
@@ -834,18 +850,48 @@ class d64(object):
         If given t/s is None, find a block near directory (as CBM DOS does it).
         Return ts or raise DiskFullException.
         """
+        # if this is the first block, find one near directory:
         if prev_ts is None:
             return self._bam_get_new_start_block()
+        # try to find one on same track as before:
         ts = self.bam_get_block_on_track(prev_ts, interleave)
         if ts is not None:
             return ts
-        raise Exception("Searching other tracks is not yet implemented!")
-        # TODO: 1541 DOS does it this way:
-        # if track is lower than directory track, search lower tracks.
-        # if track is higher than directory track, search higher tracks.
-        # if track limit reached, search on other side of directory.
-        # give up when reaching track limit for the third time.
-# FIXME! "interleave sides" optimization for 8250 and 1571 should apply here as well!
+        # first check the current track and then scan all others:
+        """
+CBM DOS algorithm
+step 1: scan "away from directory", i.e. go down if lower and go up if higher.
+step 2: when reaching track limit, reverse direction and scan on other side of directory.
+step 3: reverse direction again and scan until reaching original track.
+i.e.:
+    when starting below dir:                    when starting above dir:
+t1          dirtrack          tmax         t1          dirtrack          tmax
+|              |               |           |              |               |
+<=======........................  step 1   ........................=======>
+................===============>  step 2   <==============.................
+........<======.................  step 3   ................=======>........
+        """
+        candidate = prev_ts[0]
+        if candidate < self.directory_ts[0]:
+            change = -1
+        else:
+            change = 1
+        while True:
+            # scan candidate track
+            ts = self.bam_get_block_on_track(prev_ts, interleave, candidate)
+            if ts is not None:
+                return ts
+            # get new candidate track
+            candidate += change
+            # back to where we started? -> give up
+            if candidate == prev_ts[0]:
+                raise DiskFullException()
+            # at limit? -> go to directory and reverse search direction
+            if candidate < self.mintrack or candidate > self.maxtrack:
+                change = -change
+                candidate = self.directory_ts[0] + change
+            # FIXME - this will fail on DNP where there is no "other side of directory"!
+# FIXME! "self.sides_interleave" optimization for 8250 and 1571 should apply here as well!
 
     def linkptrs_release_all(self, start_ts):
         """
@@ -1057,6 +1103,16 @@ class d64(object):
         tup = self.allocate_file(len(body), record_length, interleave)
         print("not finished")
 
+    def set_interleave_sides(new_state):
+        """
+        set new state for "interleave sides" optimization, which is only useful
+        on 1571 and 8250.
+        """
+        if self.allow_interleaved_sides and new_state:
+            self.sides_interleave = self.maxtrack / 2   # interleave sides
+        else:
+            self.sides_interleave = 0   # default
+
 ################################################################################
 # CBM DOS 1.0 disk format, as used in non-upgraded CBM 2040 and CBM 3040 units.
 # tracks 18..24 have 20 sectors, which is a very tight fit.
@@ -1207,6 +1263,7 @@ class _8250(_8050):
     maxtrack = 154
     track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23, 77+1: 29, 77+40: 27, 77+54: 25, 77+65: 23}
     bam_blocks = [(38, 0), (38, 3), (38, 6), (38, 9)]
+    allow_interleaved_sides = True
     use_super_side_sector = True
 
     def bam_release_blocks(self, set_of_ts):
@@ -1250,6 +1307,7 @@ class _8250(_8050):
         else:
             ts = self._bamblock_allocate_block((track, sector), (38, 9), 6, 5, track - 151, exact=exact)
         return ts
+
 
 ################################################################################
 # disk format of 1541-with-40-tracks-support
@@ -1309,6 +1367,7 @@ class _1571(_1541):
     maxtrack = 70
     track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17, 35+1: 21, 35+18: 19, 35+25: 18, 35+31: 17}
     std_file_interleave = 6
+    allow_interleaved_sides = True
 
     def check_bam_counters(self):
         super().check_bam_counters(alt_maxtrack=35) # let 1541 class check the first side...
