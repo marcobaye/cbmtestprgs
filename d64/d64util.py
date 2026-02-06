@@ -262,7 +262,7 @@ class d64(object):
             sys.exit("BUG: total number of blocks is inconsistent!")
         # display error chunk
         if _debuglevel >= 2:
-            self._errorchunk_print()
+            self.errorchunk_display()
 
     def _check_track_num(self, ts):
         """_check_track_num((int, int))
@@ -340,7 +340,7 @@ class d64(object):
         """
         self.imagefile.writeback()
 
-    def _errorchunk_print(self):
+    def errorchunk_display(self):
         """
         Show contents of error chunk
         """
@@ -483,6 +483,18 @@ class d64(object):
         return sector >> 3, 1 << (sector & 7)
         # ...except for CMD native partitions, which is why they have their own version of this fn.
 
+    def _bam_bitmap_to_string(self, bitmap, length):
+        s = ""
+        for byte in bitmap:
+            byte |= 256
+            while byte != 1:
+                s += "." if byte & 1 else "#"
+                byte >>= 1
+                length -= 1
+                if length == 0:
+                    return s
+        raise Exception("BUG in _bam_bitmap_to_string()")
+
     def _bamblock_release_block(self, ts, bam_block, first_track, bam_offset, size):
         """
         Helper function to release a single block in BAM. This is used by 1541,
@@ -562,6 +574,9 @@ class d64(object):
                 break   # fail (no sectors left on this track)
         # if we arrive here, the request could not be satisfied
         return None # failure
+
+    def bam_display(self):
+        print("Sorry, display of BAM has not yet been implemented for this image type.")
 
     def _virtualfn(self):
         raise Exception("BUG: A virtual function was called!")
@@ -1156,6 +1171,17 @@ class _dos1(d64):
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR"}   # decoded file types
     use_super_side_sector = False
 
+    def bam_display(self):
+        """
+        Display block availability map in human-readable format.
+        """
+        bamblock = self.block_read((18, 0))
+        for track in range(1, 36):
+            offset = 4 * track + 1
+            bitmap = bamblock[offset:offset + 3]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+
 ################################################################################
 # CBM DOS 2.1 was used in CBM 4040 units and in upgraded 2040/3040 units.
 # tracks 18..24 have 19 sectors, which is more robust.
@@ -1207,6 +1233,17 @@ class _1541(_dos2p1):
     def bam_allocate_block(self, track, sector, exact):
         return self._bamblock_allocate_block((track, sector), (18, 0), 4, 4, track - 1, exact=exact)
 
+    def bam_display(self):
+        """
+        Display block availability map in human-readable format.
+        """
+        bamblock = self.block_read((18, 0))
+        for track in range(1, 36):
+            offset = 4 * track + 1
+            bitmap = bamblock[offset:offset + 3]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+
 ################################################################################
 # info taken from: http://mhv.bplaced.net/diskettenformate.html
 # there was a "CBM 2030" disk drive unit that used disk format "2B".
@@ -1249,7 +1286,7 @@ class _8050(_dos2p1):
         dirty380 = False
         dirty383 = False
         for track, sector in set_of_ts:
-            if track <= 50:
+            if track < 51:
                 self._bamblock_release_block((track, sector), bamblock380, 1, 6, 5)
                 dirty380 = True
             else:
@@ -1261,11 +1298,28 @@ class _8050(_dos2p1):
             self.block_write((38, 3), bamblock383)
 
     def bam_allocate_block(self, track, sector, exact):
-        if track <= 50:
+        if track < 51:
             ts = self._bamblock_allocate_block((track, sector), (38, 0), 6, 5, track - 1, exact=exact)
         else:
             ts = self._bamblock_allocate_block((track, sector), (38, 3), 6, 5, track - 51, exact=exact)
         return ts
+
+    def bam_display(self):
+        """
+        Display block availability map in human-readable format.
+        """
+        bamblock = self.block_read((38, 0))
+        for track in range(1, 51):
+            offset = 5 * track + 2
+            bitmap = bamblock[offset:offset + 4]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+        bamblock = self.block_read((38, 3))
+        for track in range(51, 78):
+            offset = 5 * (track-50) + 2
+            bitmap = bamblock[offset:offset + 4]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
 
 ################################################################################
 # CBM DOS 2.7 was used in CBM 8250 units and SFD-1001 units.
@@ -1328,6 +1382,34 @@ class _8250(_8050):
             ts = self._bamblock_allocate_block((track, sector), (38, 9), 6, 5, track - 151, exact=exact)
         return ts
 
+    def bam_display(self):
+        """
+        Display block availability map in human-readable format.
+        """
+        bamblock = self.block_read((38, 0))
+        for track in range(1, 51):
+            offset = 5 * track + 2
+            bitmap = bamblock[offset:offset + 4]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+        bamblock = self.block_read((38, 3))
+        for track in range(51, 101):
+            offset = 5 * (track - 50) + 2
+            bitmap = bamblock[offset:offset + 4]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+        bamblock = self.block_read((38, 6))
+        for track in range(101, 151):
+            offset = 5 * (track - 100) + 2
+            bitmap = bamblock[offset:offset + 4]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+        bamblock = self.block_read((38, 9))
+        for track in range(151, 155):
+            offset = 5 * (track - 150) + 2
+            bitmap = bamblock[offset:offset + 4]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
 
 ################################################################################
 # disk format of 1541-with-40-tracks-support
@@ -1527,6 +1609,18 @@ class _1571(_1541):
             ts = self.allocate_1571_side2_block(track, sector, exact)   # totals at t18s0, bitmaps at t53s0
         return ts
 
+    def bam_display(self):
+        """
+        Display block availability map in human-readable format.
+        """
+        super().bam_display()   # use 1541 code for first side
+        bamblock = self.block_read((53, 0))
+        for track in range(36, 71):
+            offset = 3 * (track - 36)
+            bitmap = bamblock[offset:offset + 3]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+
 ################################################################################
 # CBM DOS 3.0 was used in D9060 and D9090 hard disk units
 # (this "DOS 3" has nothing to do with the "DOS 3" used in 1570/1571 units)
@@ -1709,6 +1803,23 @@ class _1581(d64):
         self.bam_blocks = [(start_track, 1), (start_track, 2)]
         self.directory_ts = (start_track, 3)
         return self # we keep using this "1581" object
+
+    def bam_display(self):
+        """
+        Display block availability map in human-readable format.
+        """
+        bamblock = self.block_read((40, 1))
+        for track in range(1, 41):
+            offset = 6 * (track - 1) + 16 + 1
+            bitmap = bamblock[offset:offset + 5]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
+        bamblock = self.block_read((40, 2))
+        for track in range(41, 81):
+            offset = 6 * (track - 41) + 16 + 1
+            bitmap = bamblock[offset:offset + 5]
+            string = self._bam_bitmap_to_string(bitmap, self.sectors_of_track(track))
+            print("%03d:" % track, string)
 
 ################################################################################
 # disk format of CMD native partitions

@@ -14,10 +14,12 @@ Usage:
     d64.py [-h] [help]              show this help
     d64.py help [MODE]              show help about mode
     d64.py list                     list supported image formats
-    d64.py [dir] IMAGE              show directory
+    d64.py [dir] IMAGE              display directory
     d64.py create IMAGE             create new image file
     d64.py checkfile IMAGE FILENUM  check blocks of file
     d64.py add IMAGE FILE           add file to image
+    d64.py bam IMAGE                display block availability map
+    d64.py errors IMAGE             display optional error chunk
 """)
 
 def mode_create():
@@ -80,6 +82,27 @@ This mode adds a file to the image.
     image.add_file(args.file, filebody)
     image.writeback()   # flush to file
 
+def mode_bam():
+    parser = argparse.ArgumentParser(allow_abbrev = False, description =
+"""
+This mode displays the image's "block availability map".
+CAUTION, the format of the output varies between image types!
+""")
+    parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
+    args = parser.parse_args(sys.argv[2:])
+    image = d64util.DiskImage(args.image)
+    image.bam_display()
+
+def mode_errors():
+    parser = argparse.ArgumentParser(allow_abbrev = False, description =
+"""
+This mode displays the image's error chunk, if there is one.
+""")
+    parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
+    args = parser.parse_args(sys.argv[2:])
+    image = d64util.DiskImage(args.image)
+    image.errorchunk_display()
+
 def one_arg(arg):
     if arg in ("help", "-h"):
         show_help()
@@ -112,6 +135,10 @@ def _main():
             mode_add()
         elif mode == "extract":
             not_yet()
+        elif mode == "bam":
+            mode_bam()
+        elif mode == "errors":
+            mode_errors()
         else:
             d64util._main()
 
