@@ -1837,7 +1837,9 @@ class _cmdnative(d64):
     use_super_side_sector = True
 
     def __init__(self, filesize):
-        self.maxtrack = _ceil_div(filesize, 65536)  # each track is 64 KiB
+        self.maxtrack = filesize // 65536   # each track is 64 KiB
+        if filesize % 65536:
+            print("CAUTION, file size is not a multiple of 64 KiB, so there is unused space at the end!")
         self.blocks_total = filesize // 256
         self.bam_counters = dict()
 
@@ -1912,6 +1914,28 @@ class _cmdnative(d64):
         self.header_ts_and_offset = (start_track, start_sector), 4
         self.directory_ts = (start_track, start_sector + 1) # FIXME: add overflow check! or does CMD DOS make sure this does not happen?
         return self # we keep using this "CMD native" object
+
+    def bam_display(self):
+        """
+        Display block availability map in human-readable format.
+        """
+        print("CAUTION, this BAM is shown in hex format and values are big-endian!")
+        print("(Example: 0x1fffffff... means sectors 0, 1 and 2 are allocated)")
+        offset = 32 # skip "track 0" entry of bam because it holds other data
+        track = 1
+        for bamsector in range(2, 34): # t1s2..33 are bam blocks
+            bamblock = self.block_read((1, bamsector))
+            while offset < 256:
+                s = "t%03d: 0x" % track
+                for byte in range(32):
+                    s += "%02x" % bamblock[offset + byte]
+                print(s)
+                if track >= self.maxtrack:
+                    return
+                offset += 32
+                track += 1
+            offset = 0
+        raise Exception("BUG - too many tracks in DNP")
 
 ################################################################################
 # disk formats of CMD HD/FD images (CMD called them "partitionable formats"):
@@ -2095,15 +2119,18 @@ def DiskImage(filename, img_mode = ImgMode.READONLY):
     if filesize in _type_of_size:
         img_type, error_info = _type_of_size[filesize]
         obj = img_type()
+        hint = ""
     else:
         # FIXME: d81 with 81 tracks has same size as d1m, so add code to tell them apart!
+        # FIXME2: wtf, since when does a d81 have 81 tracks?!
         # valid sizes of CMD native partitions are 1..255 * 64 KiB:
         if (0 < filesize <= 0xff0000) and (filesize & 0xffff == 0):
             obj = _cmdnative(filesize)
             error_info = False
+            hint = f" ({filesize >> 16} tracks)"
         else:
             raise Exception("Could not process " + filename + ": Image type not recognised")
-    _debug(1, filename, "is a", obj.name, "disk image" + (" with error info." if error_info else "."))
+    _debug(1, filename, "is a", obj.name, "disk image" + hint + (" with error info." if error_info else "."))
     # FIXME: all the stuff above could be moved to imagefile.__init__(), right?
     img = imagefile(fh, body, img_mode, has_error_chunk=error_info) # create image file object...
     obj._populate(img)  # ...and pass to dos/drive object
