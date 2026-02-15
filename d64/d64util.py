@@ -221,8 +221,8 @@ class d64(object):
     #    mintrack: lowest track number (1)
     #    maxtrack: highest track number
     #    track_length_changes: dict with "new" sectors-per-track value
-    #    header_ts_and_offset: where to find disc name and five-byte "pseudo id"
-    #        this is a 2-tuple: [0] is ts tuple, [1] is offset value
+    #    header_ts: where to find disc name and five-byte "pseudo id"
+    #    header_offset: byte offset in block
     #    bam_blocks: list of ts values where block availability map is held
     #    bam_start_size_maxperblock: start offset in bam blocks, size of
     #        entries, max number of entries per block
@@ -447,8 +447,8 @@ class d64(object):
         """
         Return "drive", disk name and five-byte "pseudo id".
         """
-        ts, of = self.header_ts_and_offset
-        block = self.block_read(ts)
+        block = self.block_read(self.header_ts)
+        of = self.header_offset
         return 0, block[of:of+16], block[of+18:of+23]
 
     def bam_read_free_blocks(self, alt_maxtrack=None):
@@ -683,7 +683,7 @@ class d64(object):
         """
         # FIXME: check some "supported_by_GEOS" var so this only works for 1541
         # (and 40t/1571 friends), 1581 and CMD native.
-        block = self.block_read(self.header_ts_and_offset[0])
+        block = self.block_read(self.header_ts)
         if block[0xad:0xba] == b"GEOS format V":    # goes on with "1.0" or "1.1"...
             return block[0xab], block[0xac]
         return None
@@ -828,7 +828,7 @@ class d64(object):
         """
         # pad name with shift-space:
         name = namebytes + b"\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0\xa0"
-        entry = b"\x80" + bytes(self.header_ts_and_offset[0]) + name[:16] + bytes(11)
+        entry = b"\x80" + bytes(self.header_ts) + name[:16] + bytes(11)
         # 0x80 is for a visible DEL entry,
         # tt/ss point to header block (so VALIDATE does not complain?),
         # name is 16 bytes of filename, padded with shift-space,
@@ -1200,7 +1200,8 @@ class _dos1(d64):
     blocks_total = 690  # 670 free
     maxtrack = 35
     track_length_changes = {1: 21, 18: 20, 25: 18, 31: 17}
-    header_ts_and_offset = (18, 0), 144 # where to find diskname (dos 1 had no pseudo id?)
+    header_ts = (18, 0) # where to find diskname (dos 1 had no pseudo id?)
+    header_offset = 144 # where to find diskname (dos 1 had no pseudo id?)
     bam_blocks = [(18, 0)]
     bam_start_size_maxperblock = (4, 4, 35)
     directory_ts = (18, 1)
@@ -1231,7 +1232,7 @@ class _dos2p1(d64):
     # same as the one that was later used by 1541 and friends, so see below.
     # the only reason for this class is so both "1541" and "8050" can inherit
     # the REL file definition.
-    # FIXME: DOS capabilities are too different to be represented by inheritance,
+    # FIXME: DOS capabilities differ too much to be represented by inheritance,
     # so just add "supports_REL/supports_CBM/supports_DIR" vars!
 
 ################################################################################
@@ -1248,7 +1249,8 @@ class _1541(_dos2p1):
     blocks_total = 683  # 664 free
     maxtrack = 35
     track_length_changes = {1: 21, 18: 19, 25: 18, 31: 17}
-    header_ts_and_offset = (18, 0), 144 # where to find diskname and five-byte "pseudo id"
+    header_ts = (18, 0) # where to find diskname and five-byte "pseudo id"
+    header_offset = 144 # where to find diskname and five-byte "pseudo id"
     bam_blocks = [(18, 0)]
     bam_start_size_maxperblock = (4, 4, 35)
     directory_ts = (18, 1)
@@ -1303,7 +1305,8 @@ class _8050(_dos2p1):
     blocks_total = 2083 # 2052 free
     maxtrack = 77
     track_length_changes = {1: 29, 40: 27, 54: 25, 65: 23}
-    header_ts_and_offset = (39, 0), 6   # where to find diskname and five-byte "pseudo id"
+    header_ts = (39, 0) # where to find diskname and five-byte "pseudo id"
+    header_offset = 6   # where to find diskname and five-byte "pseudo id"
     bam_blocks = [(38, 0), (38, 3)] # one source says sector 1 instead of 3!
     bam_start_size_maxperblock = (6, 5, 50)
     directory_ts = (39, 1)
@@ -1442,7 +1445,7 @@ class _40track(_1541):
     def bam_read_free_blocks(self):
         d = super().bam_read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
         # ...and now add extra tracks:
-        print("FIXME: Checking BAM counters of tracks 36..40 is not implemented.")  # TODO
+        print("FIXME: Reading BAM counters of tracks 36..40 is not implemented.")  # TODO
         #self._bam_fill_free_blocks_dict(d, (18, 0), FIXME, 4, 5, 36)
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
@@ -1652,7 +1655,8 @@ class _d90(_dos2p1):
         super()._populate(imagefile)
         # then get parameters from t0s0:
         t0s0 = self.block_read((0, 0))
-        self.header_ts_and_offset = (t0s0[6], t0s0[7]), 6   # where to find diskname and five-byte "pseudo id"
+        self.header_ts = (t0s0[6], t0s0[7]) # where to find diskname and five-byte "pseudo id"
+        self.header_offset = 6  # where to find diskname and five-byte "pseudo id"
         self.directory_ts = (t0s0[4], t0s0[5])
         self.first_bam_ts = (t0s0[8], t0s0[9])
 
@@ -1748,7 +1752,8 @@ class _1581(d64):
     blocks_total = 3200 # 3160 free
     maxtrack = 80
     track_length_changes = {1: 40}  # all tracks have 40 sectors
-    header_ts_and_offset = (40, 0), 4   # where to find diskname and five-byte "pseudo id"
+    header_ts = (40, 0) # where to find diskname and five-byte "pseudo id"
+    header_offset = 4   # where to find diskname and five-byte "pseudo id"
     bam_blocks = [(40, 1), (40, 2)]
     bam_start_size_maxperblock = (16, 6, 40)
     directory_ts = (40, 3)
@@ -1798,7 +1803,8 @@ class _1581(d64):
         if block_count % 40:
             sys.exit('Error: Chosen CBM partition has a size of %d blocks (not a multiple of 40)!' % block_count)
         # ok, let's do it then
-        self.header_ts_and_offset = (start_track, start_sector), 4
+        self.header_ts = (start_track, start_sector)
+        self.header_offset = 4
         self.bam_blocks = [(start_track, 1), (start_track, 2)]
         self.directory_ts = (start_track, 3)
         return self # we keep using this "1581" object
@@ -1826,7 +1832,8 @@ class _cmdnative(d64):
     # the first 64 blocks are not included in "blocks free" number (reserved for root dir)
 #    maxtrack = -1   # dynamic!
     track_length_changes = {1: 256}  # all tracks have 256 sectors
-    header_ts_and_offset = (1, 1), 4   # where to find diskname and five-byte "pseudo id"
+    header_ts = (1, 1)  # where to find diskname and five-byte "pseudo id"
+    header_offset = 4   # where to find diskname and five-byte "pseudo id"
 #    bam_blocks = [(1, 2), (1, 3)]   # ...up to and including (1, 33)!
     bam_start_size_maxperblock = (0, 32, 8)
     directory_ts = (1, 34)
@@ -1911,8 +1918,10 @@ class _cmdnative(d64):
         start_track = bin30[1]
         start_sector = bin30[2]
         # ok, let's do it then
-        self.header_ts_and_offset = (start_track, start_sector), 4
-        self.directory_ts = (start_track, start_sector + 1) # FIXME: add overflow check! or does CMD DOS make sure this does not happen?
+        self.header_ts = (start_track, start_sector)
+        self.header_offset = 4
+        headerblock = self.block_read(self.header_ts)
+        self.directory_ts = (headerblock[0], headerblock[1])
         return self # we keep using this "CMD native" object
 
     def bam_display(self):
@@ -2121,8 +2130,8 @@ def DiskImage(filename, img_mode = ImgMode.READONLY):
         obj = img_type()
         hint = ""
     else:
-        # FIXME: d81 with 81 tracks has same size as d1m, so add code to tell them apart!
-        # FIXME2: wtf, since when does a d81 have 81 tracks?!
+        # FIXME: d81 with 81 tracks (as used by some geos install disk) has same
+        # size as d1m, so add code to tell them apart!
         # valid sizes of CMD native partitions are 1..255 * 64 KiB:
         if (0 < filesize <= 0xff0000) and (filesize & 0xffff == 0):
             obj = _cmdnative(filesize)
