@@ -10,16 +10,16 @@ import enum
 
 _debuglevel = 1
 
-def _debug(minlevel, *unnamed, **named):
+def _debug(minlevel: int, *unnamed, **named):
     """Helper function for debugging output."""
     if _debuglevel >= minlevel:
         print("debug%d:" % minlevel, *unnamed, **named)
 
-def _ceil_div(a, b):
+def _ceil_div(a: int, b: int) -> int:
     """ Divide and round up if remainder is nonzero """
     return -(a // -b)
 
-def _popcount(integer):
+def _popcount(integer: int) -> int:
     """Helper function to check bit fields in BAM."""
     return bin(integer).count("1")
     # since python 3.10 there is also:
@@ -75,7 +75,7 @@ class d64Exception(Exception):
 # TODO: define exceptions for "LoopDetected" and "DoublyAllocated"
 
 class cbmdosException(d64Exception):
-    def __init__(self, code, msg, track, sector):
+    def __init__(self, code: int, msg: str, track: int, sector: int) -> None:
         self.code = code
         self.msg = msg
         self.track = track
@@ -89,7 +89,7 @@ class WriteProtectOnException(cbmdosException):
         super().__init__(26, "write protect on", 0, 0)
 
 class IllegalTrackOrSectorException(cbmdosException):
-    def __init__(self, track, sector):
+    def __init__(self, track: int, sector: int):
         super().__init__(66, "illegal track or sector", track, sector)
 
 class DiskFullException(cbmdosException):
@@ -125,7 +125,7 @@ class imagefile(object):
     This class acts as a common back-end for all the different formats. It only
     handles reading blocks from the actual file and writing them back.
     """
-    def __init__(self, fh, body, img_mode, has_error_chunk=False):
+    def __init__(self, fh, body: bytearray, img_mode, has_error_chunk=False):
         self.fh = fh
         self.body = body
         if type(img_mode) == ImgMode:
@@ -146,25 +146,25 @@ class imagefile(object):
         self.partition_start = 0
         self.partition_size = self.block_count
 
-    def partition_set(self, start_and_size):
+    def partition_set(self, start_and_size: (int, int)):
         """
         Set start and size of fs in file
         (so user can access a 1541 partition inside a .d4m file)
         """
         self.partition_start, self.partition_size = start_and_size
 
-    def has_error_chunk(self):
+    def has_error_chunk(self) -> bool:
         return bool(len(self.error_chunk))
 
-    def errorchunk_read_entry(self, lba):
+    def errorchunk_read_entry(self, lba: int) -> int:
         return self.error_chunk[self.partition_start + lba]
 
-    def block_read(self, lba):
+    def block_read(self, lba: int) -> bytes or bytearray:
         offset = 256 * (self.partition_start + lba)
         block = self.body[offset:offset+256]
         return block
 
-    def block_write(self, lba, data):
+    def block_write(self, lba: int, data: bytes) -> None:
         offset = 256 * (self.partition_start + lba)
         self.body[offset:offset+256] = data
         if self.img_mode == ImgMode.READONLY:
@@ -264,7 +264,7 @@ class d64(object):
         if _debuglevel >= 2:
             self.errorchunk_display()
 
-    def _check_track_num(self, ts):
+    def _check_track_num(self, ts: (int, int)) -> None:
         """_check_track_num((int, int))
 
         Throw exception if track number is invalid for this image type.
@@ -275,7 +275,7 @@ class d64(object):
         if track > self.maxtrack:
             raise IllegalTrackOrSectorException(track, sector)  # "%d exceeds maximum track number (%d)." % (track, self.maxtrack)
 
-    def _check_ts(self, ts):
+    def _check_ts(self, ts: (int, int)) -> None:
         """_check_ts((int, int))
 
         Throw exception if track/sector address is invalid for this image type.
@@ -289,7 +289,7 @@ class d64(object):
         if sector > maxsector:
             raise IllegalTrackOrSectorException(track, sector)  # "%d exceeds maximum sector number of track %d (%d)." % (sector, track, maxsector)
 
-    def sectors_of_track(self, track):
+    def sectors_of_track(self, track: int) -> int:
         """sectors_of_track(int) -> int
 
         Return number of sectors in given track. Sector numbers start
@@ -298,7 +298,7 @@ class d64(object):
         self._check_track_num((track, 0))
         return self._sectors_of_track[track]
 
-    def ts_to_lba(self, ts):
+    def ts_to_lba(self, ts: (int, int)) -> int:
         """ts_to_lba((int, int)) -> int
 
         Convert track and sector to logical block address
@@ -308,7 +308,7 @@ class d64(object):
         track, sector = ts
         return self._blocks_before_track[track] + sector
 
-    def block_read(self, ts):
+    def block_read(self, ts: (int, int)) -> bytes or bytearray:
         """
         Read block indicated via track/sector tuple and return as bytes or
         bytearray.
@@ -317,7 +317,7 @@ class d64(object):
         self._check_ts(ts)
         return self.imagefile.block_read(self.ts_to_lba(ts))
 
-    def block_write(self, ts, data):
+    def block_write(self, ts, data: bytes) -> None:
         """
         Write data to block indicated via track/sector tuple.
         """
@@ -334,13 +334,13 @@ class d64(object):
     #    data = self.block_read(ts)
     #    return DOSblock(ts, data, self)
 
-    def writeback(self):
+    def writeback(self) -> None:
         """
         If data has been changed, write to file.
         """
         self.imagefile.writeback()
 
-    def errorchunk_display(self):
+    def errorchunk_display(self) -> None:
         """
         Show contents of error chunk
         """
@@ -359,7 +359,7 @@ class d64(object):
         else:
             print("Image does not have an error chunk.")
 
-    def _check_totals(self, ts, first_byte_offset, size, howmanytracks, firsttrack):
+    def _check_totals(self, ts: (int, int), first_byte_offset: int, size: int, howmanytracks: int, firsttrack: int) -> None:
         """
         Helper function to compare free blocks totals to free blocks bitmaps.
 
@@ -383,7 +383,7 @@ class d64(object):
             else:
                 print("BAM error for track %d: counter says %d, bitfield says %d!" % (track, total, sum), file=sys.stderr)
 
-    def _bam_fill_free_blocks_dict(self, d, ts, offset, step, howmanytracks, firsttrack):
+    def _bam_fill_free_blocks_dict(self, d: dict, ts: (int, int), offset: int, step: int, howmanytracks: int, firsttrack: int) -> None:
         """
         Helper function to read "free blocks" numbers from BAM.
 
@@ -422,7 +422,7 @@ class d64(object):
     #   all writes need a valid BAM.
     # ...and if this tool ever gets a "validate" fn, it needs to be fine-grained
     #   about what the user actually wants to be fixed.
-    def check_bam_counters(self, alt_maxtrack=None):
+    def check_bam_counters(self, alt_maxtrack=None) -> None:
         """
         Check BAM for internal consistency: Do counters match bit fields?
         This does not check allocation of files!
@@ -443,7 +443,7 @@ class d64(object):
         if tracks_left:
             sys.exit("BUG: inconsistent number of tracks when checking BAM!")
 
-    def bam_read_header_fields(self):
+    def bam_read_header_fields(self) -> (int, bytes, bytes):
         """
         Return "drive", disk name and five-byte "pseudo id".
         """
@@ -451,7 +451,7 @@ class d64(object):
         of = self.header_offset
         return 0, block[of:of+16], block[of+18:of+23]
 
-    def bam_read_free_blocks(self, alt_maxtrack=None):
+    def bam_read_free_blocks(self, alt_maxtrack=None) -> dict:
         """
         Return dictionary of free blocks per track.
         There are three additional keys, "shown", "reserved" and "all", where
@@ -475,7 +475,7 @@ class d64(object):
             sys.exit("BUG: inconsistent number of tracks when reading free blocks!")
         return d
 
-    def _bam_offset_and_bit(self, sector):
+    def _bam_offset_and_bit(self, sector: int) -> (int, int):
         """
         Convert sector number to byte offset and bit value for accessing BAM bitmap.
         """
@@ -483,7 +483,10 @@ class d64(object):
         return sector >> 3, 1 << (sector & 7)
         # ...except for CMD native partitions, which is why they have their own version of this fn.
 
-    def _bam_bitmap_to_string(self, bitmap, length):
+    def _bam_bitmap_to_string(self, bitmap: bytes, length: int) -> str:
+        """
+        Convert first "length" bits of BAM bitmap to string of zeroes and ones.
+        """
         s = ""
         for byte in bitmap:
             byte |= 256
@@ -495,7 +498,7 @@ class d64(object):
                     return s
         raise Exception("BUG in _bam_bitmap_to_string()")
 
-    def _bamblock_release_block(self, ts, bam_block, first_track, bam_offset, size):
+    def _bamblock_release_block(self, ts: (int, int), bam_block: bytes, first_track: int, bam_offset: int, size: int) -> None:
         """
         Helper function to release a single block in BAM. This is used by 1541,
         8050, 8250, 1581 and first side of 1571. Other formats and second side
@@ -522,7 +525,7 @@ class d64(object):
         # TODO - compare totals to maximum for this track?
         #raise Exception("BAM is corrupt, totals do not match bitmap.")
 
-    def _bamblock_allocate_block(self, wanted_ts, bam_ts, table_offset, step, entry, exact=True):
+    def _bamblock_allocate_block(self, wanted_ts: (int, int), bam_ts: (int, int), table_offset: int, step: int, entry: int, exact=True) -> (int, int) or None:
         """
         Helper function to allocate a single block on given track in BAM. This
         is used by 1541, 8050, 8250, 1581 and first side of 1571. Other formats
@@ -575,7 +578,7 @@ class d64(object):
         # if we arrive here, the request could not be satisfied
         return None # failure
 
-    def _bam_to_list(self, ts, offset, table_step, track1st, limit):
+    def _bam_to_list(self, ts: (int, int), offset: int, table_step: int, track1st: int, limit: int) -> list:
         """
         convert BAM bitmaps to human-readable version by returning list of
         tuples with track number and string.
@@ -588,14 +591,14 @@ class d64(object):
             offset += table_step
         return ret
 
-    def _bam_print_list(self, li):
+    def _bam_print_list(self, li: list) -> None:
         """
         print list generated by function above.
         """
         for track, string in li:
             print("t%03d:" % track, string)
 
-    def _bam_print_transposed(self, li):
+    def _bam_print_transposed(self, li: list) -> None:
         """
         print list, but transpose to better use console
         """
@@ -614,13 +617,13 @@ class d64(object):
                 print(fit[tr][se], end="")
             print()
 
-    def bam_display(self):
+    def bam_display(self) -> None:
         print("Sorry, display of BAM has not yet been implemented for this image type.")
 
-    def _virtualfn(self):
+    def _virtualfn(self) -> None:
         raise Exception("BUG: A virtual function was called!")
 
-    def bam_allocate_block(self, track, sector, exact):
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         """
         Helper function to allocate a single block in BAM.
         If block is available, allocate it and return t/s.
@@ -629,13 +632,13 @@ class d64(object):
         """
         self._virtualfn()
 
-    def bam_release_blocks(self, set_of_ts):
+    def bam_release_blocks(self, set_of_ts: list) -> None:
         """
         Free all blocks given as t/s tuples.
         """
         self._virtualfn()
 
-    def linkptrs_follow(self, ts, display=False, include_blocks=True):
+    def linkptrs_follow(self, ts: (int, int), display=False, include_blocks=True) -> ((int, int), bytes or bytearray):
         """
         Follow link pointers and return each block as (ts, data) tuple.
         If include_blocks is False, only return ts tuples.
@@ -677,7 +680,7 @@ class d64(object):
             yield (ts, block) if include_blocks else ts
             ts = next_ts    # go on
 
-    def geos_get_border_block_ts(self):
+    def geos_get_border_block_ts(self) -> (int, int) or None:
         """
         Return t/s of GEOS border block or None if there isn't one.
         """
@@ -688,7 +691,7 @@ class d64(object):
             return block[0xab], block[0xac]
         return None
 
-    def _directory_iter(self, start_ts):
+    def _directory_iter(self, start_ts: (int, int)):
         """
         Return directory entries as (30-byte sequence, wherefound) tuples.
         """
@@ -723,7 +726,7 @@ class d64(object):
                     yield entry_number, bin30, location # CAUTION, maybe more fields will get added in future!
                 entry_number += 1
 
-    def direntry_get(self, which):
+    def direntry_get(self, which: int) -> bytes or bytearray:
         """
         Return a single dir entry, specified as index.
         """
@@ -734,7 +737,7 @@ class d64(object):
                 sys.exit("BUG: This cannot happen!")
         sys.exit("Error: Specified directory index does not exist.")
 
-    def direntry_cook(self, index, bin30):
+    def direntry_cook(self, index: int, bin30: bytes or bytearray) -> (bool, int, str, str, str):
         """
         Convert directory entry to what is shown to user
         """
@@ -767,7 +770,7 @@ class d64(object):
             optional += bin30[23:28].hex(" ")
         return in_use, block_count, file_name, file_type, optional
 
-    def directory_write(self, new_dir): # TODO: add flag for "accept oversized dirs and use other tracks"
+    def directory_write(self, new_dir: list) -> None:   # TODO: add flag for "accept oversized dirs and use other tracks"
         """
         Overwrite directory with data given as list of 30-byte entries.
         """
@@ -821,7 +824,7 @@ class d64(object):
         if len(new_dir):
             sys.exit("BUG: still data left after writing dir!")
 
-    def direntry_make_dummy(self, namebytes=b""):
+    def direntry_make_dummy(self, namebytes=b"") -> bytes:
         """
         Return a 30-byte dummy directory entry (DEL).
         A name can be given, but must be bytes or bytearray!
@@ -832,10 +835,14 @@ class d64(object):
         # 0x80 is for a visible DEL entry,
         # tt/ss point to header block (so VALIDATE does not complain?),
         # name is 16 bytes of filename, padded with shift-space,
-        # and then there are 11 bytes for various (DOS/GEOS) purposes, all 0 here
+        # and then there are 11 bytes for various purposes, all 0 here:
+        #   2 bytes for number of blocks
+        #   3 bytes for REL files (or info block in case of GEOS)
+        #   1 byte for GEOS file type
+        #   5 bytes for year/month/day/hour/minute (GEOS/CMD date stamp)
         return entry
 
-    def _bam_get_new_start_block(self):
+    def _bam_get_new_start_block(self) -> (int, int):
         """
         Find and allocate a block for a new file.
         Return ts or raise DiskFullException.
@@ -854,6 +861,7 @@ class d64(object):
         while True:
             checks = 0
             # check below directory:
+# FIXME - 9060/9090 have a track 0, but it is not used for allocations, so this is wrong:
             if lower >= self.mintrack:
                 ts = self.bam_allocate_block(lower, 0, exact=False)
                 if ts is not None:
@@ -882,7 +890,7 @@ class d64(object):
                 break
         raise DiskFullException()
 
-    def bam_get_block_on_track(self, prev_ts, interleave=None, cand_track=None):
+    def bam_get_block_on_track(self, prev_ts: (int, int) or None, interleave=None, cand_track=None) -> (int, int) or None:
         """
         Find and allocate a new block after given block on specific track.
         Return ts or None if track is full.
@@ -902,7 +910,7 @@ class d64(object):
         # just do what the DOS does, allocate the next possible sector:
         return self.bam_allocate_block(cand_track, cand_sector, exact=False)
 
-    def bam_get_additional_block(self, prev_ts, interleave=None):
+    def bam_get_additional_block(self, prev_ts: (int, int) or None, interleave=None) -> (int, int):
         """
         Find and allocate a new block after given t/s tuple.
         If given t/s is None, find a block near directory (as CBM DOS does it).
@@ -967,7 +975,7 @@ class d64(object):
                 if ts is not None:
                     return ts
 
-    def linkptrs_release_all(self, start_ts):
+    def linkptrs_release_all(self, start_ts: (int, int)) -> None:
         """
         Free all connected blocks, following the chain of link pointers.
         """
@@ -976,7 +984,7 @@ class d64(object):
             all_ts.add(ts)
         self.bam_release_blocks(all_ts)
 
-    def filetype(self, filetype):
+    def filetype(self, filetype: int) -> bytes:
         """
         Convert CBM file type to text representation.
         """
@@ -989,19 +997,20 @@ class d64(object):
         ret += b"<" if filetype & 64 else b" "
         return ret
 
-    def enter(self, which):
+    def enter(self, which: int) -> object:
         """
         Enter partition or subdirectory.
         This works for 1581-style "CBM" partitions, for CMD-style partitions
         and for subdirectories in CMD native partitions.
         The partition/subdirectory is specified via its directory index.
+        The return value is the disk image to use for all further accesses.
         """
         sys.exit("Error: This image type does not support entering partitions/directories.")
 
 # FIXME - a lot of this code could be re-used for _creating_ side sectors, so
 # better split this up into "make correct side sectors" and "compare correct
 # side sectors to actual side sectors":
-    def check_side_sectors(self, std_chain, second_chain, record_length):
+    def check_side_sectors(self, std_chain: list, second_chain: list, record_length: int) -> None:
         """
         Check all contents of a REL file's side sectors.
         "std_chain" is the t/s list of file's normal blocks, without actual block data.
@@ -1059,7 +1068,7 @@ class d64(object):
             if block[16:16+len(pointer_bytes)] != pointer_bytes:
                 print(f"Side sector {index} has wrong pointers to data blocks.")
 
-    def check_file(self, index):
+    def check_file(self, index: int) -> None:
         """
         check blocks of file (only really useful for REL files)
         """
@@ -1089,7 +1098,7 @@ class d64(object):
             self.check_side_sectors(std_chain, second_chain, record_length)
         #
 
-    def delete_file(self, index):
+    def delete_file(self, index: int) -> None:
         """
         release all blocks of file and remove its directory entry
         """
@@ -1129,7 +1138,7 @@ class d64(object):
     #   - use alternative sector interleave
     #   - interleave sides on 1571 (and 8250?)
     #   - only make a super side sector if needed
-    def allocate_file(self, filesize, record_length=None, interleave=None):
+    def allocate_file(self, filesize: int, record_length: int=None, interleave: int=None) -> (list, (int, int)):
         """
         allocate enough blocks so a file of the given size can be stored.
         if record_length is given, create a chain of side sectors pointing to
@@ -1170,14 +1179,14 @@ class d64(object):
         # write data to sss and ss.
         # return list of all data ts and ts of first ss.
 
-    def add_file(self, name, body, record_length=None, interleave=None):
+    def add_file(self, name: bytes, body: bytes, record_length: int=None, interleave: int=None) -> None:
         """
         add file to image
         """
         tup = self.allocate_file(len(body), record_length, interleave)
         print("not finished")
 
-    def set_interleave_sides(new_state):
+    def set_interleave_sides(self, new_state: bool) -> None:
         """
         set new state for "interleave sides" optimization, which is only useful
         on 1571 and 8250.
@@ -1186,6 +1195,10 @@ class d64(object):
             self.sides_interleave = self.maxtrack / 2   # interleave sides
         else:
             self.sides_interleave = 0   # default
+
+    # TODO: add function for "force 1571 interleave (6) on 1541 image"
+
+    # TODO: add function for "force 1541 interleave (10) on 1571 image"
 
 ################################################################################
 # CBM DOS 1.0 disk format, as used in non-upgraded CBM 2040 and CBM 3040 units.
@@ -1258,7 +1271,7 @@ class _1541(_dos2p1):
     std_directory_interleave = 3
     std_file_interleave = 10
 
-    def bam_release_blocks(self, set_of_ts):
+    def bam_release_blocks(self, set_of_ts: list) -> None:
         bamblock = self.block_read((18, 0))
         dirty = False
         for track, sector in set_of_ts:
@@ -1267,7 +1280,7 @@ class _1541(_dos2p1):
         if dirty:
             self.block_write((18, 0), bamblock)
 
-    def bam_allocate_block(self, track, sector, exact):
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         return self._bamblock_allocate_block((track, sector), (18, 0), 4, 4, track - 1, exact=exact)
 
     def bam_display(self):
@@ -1314,7 +1327,7 @@ class _8050(_dos2p1):
     #std_directory_interleave = 3   ?
     #std_file_interleave = 10       ?
 
-    def bam_release_blocks(self, set_of_ts):
+    def bam_release_blocks(self, set_of_ts: list) -> None:
         bamblock380 = self.block_read((38, 0))
         bamblock383 = self.block_read((38, 3))
         dirty380 = False
@@ -1331,7 +1344,7 @@ class _8050(_dos2p1):
         if dirty383:
             self.block_write((38, 3), bamblock383)
 
-    def bam_allocate_block(self, track, sector, exact):
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         if track < 51:
             ts = self._bamblock_allocate_block((track, sector), (38, 0), 6, 5, track - 1, exact=exact)
         else:
@@ -1365,7 +1378,7 @@ class _8250(_8050):
     allow_1571_8250_trick = True
     use_super_side_sector = True
 
-    def bam_release_blocks(self, set_of_ts):
+    def bam_release_blocks(self, set_of_ts: list) -> None:
         bamblock380 = self.block_read((38, 0))
         bamblock383 = self.block_read((38, 3))
         bamblock386 = self.block_read((38, 6))
@@ -1396,7 +1409,7 @@ class _8250(_8050):
         if dirty389:
             self.block_write((38, 9), bamblock389)
 
-    def bam_allocate_block(self, track, sector, exact):
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         if track <= 50:
             ts = self._bamblock_allocate_block((track, sector), (38, 0), 6, 5, track - 1, exact=exact)
         elif track <= 100:
@@ -1450,7 +1463,11 @@ class _40track(_1541):
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
 
-    def bam_allocate_block(self, track, sector, exact):
+    #def bam_release_blocks(self, set_of_ts: list) -> None:
+    # TODO: add this fn or a dummy because the 1541 method would overwrite the
+    # disk name when track grows beyond 35!
+
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         if track <= 35:
             return super().bam_allocate_block(track, sector, exact) # just call 1541 method
         raise Exception("Allocation of tracks 36..40 is not yet supported!")    # TODO
@@ -1501,7 +1518,7 @@ class _1571(_1541):
         if totals_t53:
             print("BAM shows %d free blocks on t53, drive does not like this!" % totals_t53)
 
-    def bam_read_free_blocks(self):
+    def bam_read_free_blocks(self) -> dict:
         d = super().bam_read_free_blocks(alt_maxtrack=35)   # let 1541 class do the first side...
         # ...and now add second side:
         self._bam_fill_free_blocks_dict(d, (18, 0), 221, 1, 35, 36)
@@ -1510,7 +1527,7 @@ class _1571(_1541):
         # TODO - find a way to include "would show XYZ in a 1541 drive" info!
         return d
 
-    def release_1571_side2_block(self, ts, totals_block, bitmaps_block):
+    def release_1571_side2_block(self, ts: (int, int), totals_block: bytes, bitmaps_block: bytes) -> None:
         """
         Helper function to release a single block in BAM. This function is only
         used for blocks on second side of 1571 because their BAM is split over
@@ -1537,7 +1554,7 @@ class _1571(_1541):
         # TODO - compare totals to maximum for this track?
         #raise Exception("BAM is corrupt, totals do not match bitmap.")
 
-    def allocate_1571_side2_block(self, track, wanted_sector, exact):
+    def allocate_1571_side2_block(self, track: int, wanted_sector: int, exact: bool) -> (int, int) or None:
         """
         Helper function to allocate a single block in BAM. This function is only
         used for blocks on second side of 1571 because their BAM is split over
@@ -1590,7 +1607,7 @@ class _1571(_1541):
         # if we arrive here, the request could not be satisfied
         return None # failure
 
-    def bam_release_blocks(self, set_of_ts):
+    def bam_release_blocks(self, set_of_ts: list) -> None:
         bamblock180 = self.block_read((18, 0))
         bamblock530 = self.block_read((53, 0))
         dirty180 = False
@@ -1608,7 +1625,7 @@ class _1571(_1541):
         if dirty530:
             self.block_write((53, 0), bamblock530)
 
-    def bam_allocate_block(self, track, sector, exact):
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         if track <= 35:
             ts = self._bamblock_allocate_block((track, sector), (18, 0), 4, 4, track - 1, exact=exact)    # all at t18s0
         else:
@@ -1660,7 +1677,7 @@ class _d90(_dos2p1):
         self.directory_ts = (t0s0[4], t0s0[5])
         self.first_bam_ts = (t0s0[8], t0s0[9])
 
-    def check_bam_counters(self):
+    def check_bam_counters(self) -> None:
         _debug(1, "Checking " + self.name + " BAM for internal consistency")
         bam_ts = self.first_bam_ts
         entry = 48  # so we know when to fetch the next bam block
@@ -1681,7 +1698,7 @@ class _d90(_dos2p1):
                     print("BAM error for cyl %d, head %d: counter says %d, bitfield says %d!" % (cyl, head, total, sum), file=sys.stderr)
                 entry += 1
 
-    def bam_read_free_blocks(self):
+    def bam_read_free_blocks(self) -> dict:
         _debug(3, "Reading free blocks counters")
         d = dict()
         d["all"] = 0
@@ -1707,10 +1724,10 @@ class _d90(_dos2p1):
                 d["reserved"] += freeblocks
         return d
 
-    def bam_release_blocks(self, set_of_ts):
+    def bam_release_blocks(self, set_of_ts: list) -> None:
         raise Exception("releasing blocks not implemented for D9060/D9090!")
 
-    def bam_allocate_block(self, track, sector, exact):
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         raise Exception("allocating blocks not implemented for D9060/D9090!")
 
 class _d9060(_d90):
@@ -1763,7 +1780,7 @@ class _1581(d64):
     filetypes = { 0:b"DEL", 1:b"SEQ", 2:b"PRG", 3:b"USR", 4:b"REL", 5:b"CBM" }  # decoded file types
     use_super_side_sector = True
 
-    def bam_release_blocks(self, set_of_ts):
+    def bam_release_blocks(self, set_of_ts: list) -> None:
         bamblock1 = self.block_read((40, 1))
         bamblock2 = self.block_read((40, 2))
         dirty1 = False
@@ -1780,14 +1797,14 @@ class _1581(d64):
         if dirty2:
             self.block_write((40, 2), bamblock2)
 
-    def bam_allocate_block(self, track, sector, exact):
+    def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         if track <= 40:
             ts = self._bamblock_allocate_block((track, sector), (40, 1), 16, 6, track - 1, exact=exact)
         else:
             ts = self._bamblock_allocate_block((track, sector), (40, 2), 16, 6, track - 41, exact=exact)
         return ts
 
-    def enter(self, which):
+    def enter(self, which: int) -> object:
         # enter 1581-style "CBM" partition
         bin30 = self.direntry_get(which)
         filetype = bin30[0] & 7
@@ -1819,11 +1836,18 @@ class _1581(d64):
 
 ################################################################################
 # disk format of CMD native partitions
-# new filetype: "DIR" for sub-directories (but no support for "CBM" partitions)
+# new filetype: "DIR" for sub-directories (but no support for 1581-style "CBM" partitions)
 # file extension is .dnp
 # TODO: display the "native autoboot" flag (byte 7 of t1s2) as debug info with the directory?
 # TODO: read and check "track number of last available track in partition" (byte 8 of t1s2)
 # t1s1, offset 2: 0x48 0x00 (-> format "H"), directory says "1H"
+
+# the first 64 blocks are allocated/reserved for bootblock/bam/rootdir, so:
+# a 1-track DNP would use 256 blocks with 192 free
+# a 12-track DNP (DD FD) uses 3072 blocks with 3008 free
+# a 25-track DNP (HD FD) uses 6400 blocks with 6336 free
+# a 50-track DNP (ED FD) uses 12800 blocks with 12736 free
+# a 255-track DNP (maximum) uses 65280 blocks with 65216 free
 
 class _cmdnative(d64):
     name = "CMD native"
@@ -1850,12 +1874,12 @@ class _cmdnative(d64):
         self.blocks_total = filesize // 256
         self.bam_counters = dict()
 
-    def check_bam_counters(self):
+    def check_bam_counters(self) -> None:
         # CMD native format does not have "free blocks on track" counters,
         # so they cannot disagree with bitmaps, so check always succeeds:
         pass
 
-    def _fake_bam_counters(self):
+    def _fake_bam_counters(self) -> None:
         # BAM bitmaps are in blocks (1,2) up to and including (1,33),
         # but there are no counters (because 0..256 does not fit in a byte),
         # so we count the bits ourself:
@@ -1878,7 +1902,7 @@ class _cmdnative(d64):
         # it can be subtracted when needed:
         self.bam_counters["reserved_area"] = reserved_area_sum
 
-    def bam_read_free_blocks(self):
+    def bam_read_free_blocks(self) -> dict:
         """
         Return dictionary of free blocks per track.
         There are three additional keys, "shown", "reserved" and "all", where
@@ -1899,7 +1923,7 @@ class _cmdnative(d64):
         d["shown"] = sum - reserved_area_sum
         return d
 
-    def _bam_offset_and_bit(self, sector):
+    def _bam_offset_and_bit(self, sector: int) -> (int, int):
         """
         Convert sector number to byte offset and bit value for accessing BAM bitmap.
         """
@@ -1907,9 +1931,13 @@ class _cmdnative(d64):
         # most significant bit goes first (which differs from all other formats):
         return sector >> 3, 128 >> (sector & 7)
 
-    # TODO: add block_allocate and block_free methods!
+    #def bam_release_blocks(self, set_of_ts: list) -> None:
+        # TODO
 
-    def enter(self, which):
+    #def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
+        # TODO
+
+    def enter(self, which: int) -> object:
         # enter CMD-style sub-directory
         bin30 = self.direntry_get(which)
         filetype = bin30[0] & 7
@@ -1924,7 +1952,7 @@ class _cmdnative(d64):
         self.directory_ts = (headerblock[0], headerblock[1])
         return self # we keep using this "CMD native" object
 
-    def bam_display(self):
+    def bam_display(self) -> None:
         """
         Display block availability map in human-readable format.
         """
@@ -1948,7 +1976,7 @@ class _cmdnative(d64):
 
 ################################################################################
 # disk formats of CMD HD/FD images (CMD called them "partitionable formats"):
-# this format started with the CMD HD and was also used in RAMLink and CMD FDs.
+# this format started with the CMD HD and was also used in CMD FDs and RAMLink.
 # up to 254 partitions possible on HD, 31 on RAMLink and FDs.
 # partitions are stored sequentially without any gaps, beginning with the
 # system partition. the system partition holds the DOS in case of HD and is
@@ -1961,15 +1989,15 @@ class _cmdnative(d64):
 #   file extension .d1m, size is 829440
 #   file extension .d2m, size is 1658880
 #   file extension .d4m, size is 3317760
-# all have 81 tracks, where track 81 holds the partition table
+# all use 81 tracks, where track 81 holds the partition table
 # supported partition types are:
 #   0: not created
 #   1: native   (takes N * 256 blocks)
-#   2: 1541emu  (takes 684 blocks, see below why)
-#   3: 1571emu  (takes 1366 blocks on HD, 1368 on FD, see below why)
+#   2: 1541emu  (takes 683+1 blocks, see below why)
+#   3: 1571emu  (takes 1366 blocks on HD, 1366+2 on FD, see below why)
 #   4: 1581emu  (takes 3200 blocks)
 #       -> each partition must start on a hardware sector.
-#       HD uses 512-byte blocks, FD uses 1024-byte blocks, therefore sizes of
+#       HD uses 512-byte sectors, FD uses 1024-byte sectors, therefore sizes of
 #       1541- and 1571-emulation partitions are rounded up.
 # only supported by HD:
 #   5: 1581 CP/M emulation
@@ -1992,12 +2020,12 @@ class _cmdpartitionable(d64):
         self.imagefile.partition_set(self.partition)
 
     # partition table does not really have header and id fields, so fake them:
-    def bam_read_header_fields(self):
-        return 255, b"CMD FD          ", b"FD 1H"   # FD
+    def bam_read_header_fields(self) -> (int, bytes, bytes):
 #       return 255, b"CMD HD          ", b"HD 1H"   # HD
-        #FIXME: fix for RAMLink?
+        return 255, b"CMD FD          ", b"FD 1H"   # FD
+#       return 255, b"CMD RAMLINK     ", b"RL 1H"   # RAMLink   FIXME: check values!
 
-    def bam_read_free_blocks(self):
+    def bam_read_free_blocks(self) -> dict:
         # just use all zero for now:
         d = dict()
         for track in range(1, self.maxtrack + 1):
@@ -2013,7 +2041,7 @@ class _cmdpartitionable(d64):
         pass
 
     partition_types = { 0:b"*DEL", 1:b" NAT", 2:b"  41", 3:b"  71", 4:b"  81", 5:b" 81C", 255:b" SYS" }
-    def filetype(self, filetype):
+    def filetype(self, filetype: int) -> bytes:
         """
         Convert CBM file type to text representation.
         """
@@ -2023,7 +2051,7 @@ class _cmdpartitionable(d64):
             t = b" 0X%2X" % filetype    # unsupported types are shown as hex
         return t
 
-    def direntry_cook(self, index, bin30):
+    def direntry_cook(self, index: int, bin30: bytes or bytearray) -> (bool, int, str, str, str):
         """
         Convert entry from partition directory to what is shown to user
         """
@@ -2040,7 +2068,7 @@ class _cmdpartitionable(d64):
         optional += " : %08x " % size_bytes
         return in_use, index, partition_name, partition_type, optional
 
-    def enter(self, which):
+    def enter(self, which: int) -> object:
         # enter one of the partitions
         supported_types = {
             1: _cmdnative,
@@ -2067,29 +2095,27 @@ class _cmdpartitionable(d64):
         new_obj._populate(self.imagefile)
         return new_obj  # tell caller to use the new handler
 
-    def geos_get_border_block_ts(self):
+    def geos_get_border_block_ts(self) -> (int, int) or None:
         return None
 
 class _cmdfd1m(_cmdpartitionable):
     name = "CMD DD partitioned"
-    blocks_total = 3240 # 3200 for native partition plus 40 in extra track to hold partition table
-    # 3008 free (the first 64 are allocated/reserved for bootblock/bam/rootdir,
-    # the last 128 are unused because 3200 is not a multiple of 256)
-    track_length_changes = {1: 40}  # all tracks have 40 blocks (2 sides * 5 sectors * 1024 byte)
+    blocks_total = 3240 # 3200 for partitions plus 40 on track 81 (holds partition table)
+    # a DNP on a DD disk only uses 3072 blocks, because 3200 is not a multiple of 256.
+    # so the last 128 blocks are unused in this case.
+    track_length_changes = {1: 40}  # each track has 40 blocks (2 heads * 5 sectors * 1024 bytes)
     partition = (80 * 40 + 8, 4)
 
 class _cmdfd2m(_cmdpartitionable):
     name = "CMD FD-2000 partitioned"
-    blocks_total = 6480 # 6400 for native partition plus 80 in extra track to hold partition table
-    # 6336 free (the first 64 are allocated/reserved for bootblock/bam/rootdir)
-    track_length_changes = {1: 80}  # all tracks have 80 blocks (2 sides * 10 sectors * 1024 byte)
+    blocks_total = 6480 # 6400 for partitions plus 80 on track 81 (holds partition table)
+    track_length_changes = {1: 80}  # each track has 80 blocks (2 heads * 10 sectors * 1024 bytes)
     partition = (80 * 80 + 8, 4)
 
 class _cmdfd4m(_cmdpartitionable):
     name = "CMD FD-4000 partitioned"
-    blocks_total = 12960    # 12800 for native partition plus 160 in extra track to hold partition table
-    # 12736 free (the first 64 are allocated/reserved for bootblock/bam/rootdir)
-    track_length_changes = {1: 160} # all tracks have 160 blocks (2 sides * 20 sectors * 1024 byte)
+    blocks_total = 12960    # 12800 for partitions plus 160 on extra track (hold partition table)
+    track_length_changes = {1: 160} # each track has 160 blocks (2 heads * 20 sectors * 1024 bytes)
     partition = (80 * 160 + 8, 4)
 
 ################################################################################
@@ -2111,7 +2137,7 @@ def list_formats():
     for type in _supported:
         print(type.name)
 
-def DiskImage(filename, img_mode = ImgMode.READONLY):
+def DiskImage(filename: str, img_mode = ImgMode.READONLY) -> d64:
     """
     Identify disk image file and return as d64 object.
     If img_mode is 'ImgMode.WRITEBACK', you need to call writeback() to flush
@@ -2130,8 +2156,8 @@ def DiskImage(filename, img_mode = ImgMode.READONLY):
         obj = img_type()
         hint = ""
     else:
-        # FIXME: d81 with 81 tracks (as used by some geos install disk) has same
-        # size as d1m, so add code to tell them apart!
+        # FIXME: a d81 with 81 tracks (as used by some geos install disk) is the
+        # same size as a d1m, so add code to tell them apart!
         # valid sizes of CMD native partitions are 1..255 * 64 KiB:
         if (0 < filesize <= 0xff0000) and (filesize & 0xffff == 0):
             obj = _cmdnative(filesize)
@@ -2170,7 +2196,7 @@ _petscii_lowercase = (
 _ANSI_REVERSE = "\033[7m"
 _ANSI_RVS_OFF = "\033[27m"
 
-def from_petscii(bindata, second_charset):
+def from_petscii(bindata: bytes, second_charset: bool) -> str:
     """Helper fn to convert petscii bytes to something printable."""
     charset = _petscii_lowercase if second_charset else _petscii_graphics
     ret = ""
@@ -2188,14 +2214,14 @@ def from_petscii(bindata, second_charset):
             ret += _ANSI_RVS_OFF
     return ret
 
-def _quote(name16):
+def _quote(name16: bytes) -> bytes:
     """
     Helper function to add opening and closing quotes at correct positions.
     """
     name16 += b"\xa0"   # appending a shift-space and then replacing the first...
     return b'"' + name16.replace(b"\xa0", b'"', 1)   # ...should do the trick.
 
-def show_directory(img, show_all=False, second_charset=False, long=False):
+def show_directory(img, show_all=False, second_charset=False, long=False) -> None:
     """
     Show directory of image file.
     """
@@ -2231,13 +2257,13 @@ def show_directory(img, show_all=False, second_charset=False, long=False):
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
     #_debug(1, "%d + %d = %d" % (blocks_total, shown_free, blocks_total + shown_free))
 
-def extract_block_sequence(img, ts, outname, blockcount):
+def extract_block_sequence(img: d64, ts: (int, int), outname: str, blockcount: int) -> None:
     """
     Extract a number of consecutive blocks to file (CBM "partitions")
     """
     print("TODO: extract %d blocks beginning at t%ds%d to <%s>." % (blockcount, ts[0], ts[1], outname))
 
-def extract_block_chain(img, ts, outname):
+def extract_block_chain(img: d64, ts: (int, int), outname: str) -> None:
     """
     Extract block chain to file
     """
@@ -2259,7 +2285,7 @@ def extract_block_chain(img, ts, outname):
         return
     #print("length:", len(body))
 
-def extract_all(img, full=False):
+def extract_all(img: d64, full=False) -> None:
     """
     Extract all files to current directory.
     """
@@ -2311,7 +2337,7 @@ def extract_all(img, full=False):
         # everything else:
         extract_block_chain(img, ts, outname)
 
-def _process_file(file, show_all=False, second_charset=False, long=False, extract=False, path=None):
+def _process_file(file: str, show_all=False, second_charset=False, long=False, extract=False, path=None) -> None:
     if path == None:
         path = []
     try:
@@ -2331,7 +2357,7 @@ def _process_file(file, show_all=False, second_charset=False, long=False, extrac
     else:
         show_directory(img, show_all=show_all, second_charset=second_charset, long=long)
 
-def process_path(path):
+def process_path(path: str) -> list:
     if not path:
         return []
     ret = []
