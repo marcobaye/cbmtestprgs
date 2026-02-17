@@ -210,6 +210,10 @@ class imagefile(object):
 ################################################################################
 # virtual base class
 
+# this dummy definition allows us to use "d64" in type hints in the real definition
+class d64(object):
+    pass
+
 class d64(object):
     """
     This class describes a cbm disc image. There are subclasses for 1541,
@@ -236,13 +240,14 @@ class d64(object):
     # used for optional "interleave sides" optimization:
     allow_1571_8250_trick = False   # this flag says whether the var below can be changed
     sides_interleave    = 0 # track diff between sides, zero means "do not interleave sides"
+    drivenum = 0    # "drive number" in directory, or partition number on CMD hw
 
     def __init__(self):
         if "blocks_total" not in self.__dir__():
             raise Exception("Only subclasses (1541, 1571, 1581, ...) can be instantiated!")
 
     # TODO: fix code so all this stuff can be moved to __init__()!
-    def _populate(self, imagefile):
+    def _populate(self, imagefile) -> d64:
         """
         Called after correct subclass has been instantiated.
         """
@@ -263,6 +268,7 @@ class d64(object):
         # display error chunk
         if _debuglevel >= 2:
             self.errorchunk_display()
+        return self
 
     def _check_track_num(self, ts: (int, int)) -> None:
         """_check_track_num((int, int))
@@ -449,7 +455,7 @@ class d64(object):
         """
         block = self.block_read(self.header_ts)
         of = self.header_offset
-        return 0, block[of:of+16], block[of+18:of+23]
+        return self.drivenum, block[of:of+16], block[of+18:of+23]
 
     def bam_read_free_blocks(self, alt_maxtrack=None) -> dict:
         """
@@ -997,7 +1003,7 @@ class d64(object):
         ret += b"<" if filetype & 64 else b" "
         return ret
 
-    def enter(self, which: int) -> object:
+    def enter(self, which: int) -> d64:
         """
         Enter partition or subdirectory.
         This works for 1581-style "CBM" partitions, for CMD-style partitions
@@ -1676,6 +1682,7 @@ class _d90(_dos2p1):
         self.header_offset = 6  # where to find diskname and five-byte "pseudo id"
         self.directory_ts = (t0s0[4], t0s0[5])
         self.first_bam_ts = (t0s0[8], t0s0[9])
+        return self
 
     def check_bam_counters(self) -> None:
         _debug(1, "Checking " + self.name + " BAM for internal consistency")
@@ -1804,7 +1811,7 @@ class _1581(d64):
             ts = self._bamblock_allocate_block((track, sector), (40, 2), 16, 6, track - 41, exact=exact)
         return ts
 
-    def enter(self, which: int) -> object:
+    def enter(self, which: int) -> d64:
         # enter 1581-style "CBM" partition
         bin30 = self.direntry_get(which)
         filetype = bin30[0] & 7
@@ -1937,7 +1944,7 @@ class _cmdnative(d64):
     #def bam_allocate_block(self, track: int, sector: int, exact: bool) -> (int, int) or None:
         # TODO
 
-    def enter(self, which: int) -> object:
+    def enter(self, which: int) -> d64:
         # enter CMD-style sub-directory
         bin30 = self.direntry_get(which)
         filetype = bin30[0] & 7
@@ -2006,25 +2013,30 @@ class _cmdnative(d64):
 # TODO: do not display any "blocks free" number (or maybe do, but use sensible data)
 # TODO: mark the default partition in the directory
 
-class _cmdpartitionable(d64):
+class _cmdparttable(d64):
     """
-    virtual base class for the three CMD FD series formats.
+    class for the partition table at the end of CMD partitionable formats.
     """
-    maxtrack = 81
+    mintrack = 0    # needed to get valid link pointers in directory:
+    # there are eight blocks before the (1,0) block, so we pretend to have a
+    # track zero and each track has eight blocks, i.e. 2048 bytes.
+    #maxtrack depends on FD type
     directory_ts = (1, 0)
 
-    def _populate(self, imagefile):
-        # first call parent class
-        super()._populate(imagefile)
-        # then set partition values so we can access partition directory
-        self.imagefile.partition_set(self.partition)
+    def __init__(self, size):
+        self.maxtrack = (size // 2048) -1
+        self.blocks_total = size // 256
+        self.track_length_changes = {0: 8}
+        self.bam_counters = dict()
 
     # partition table does not really have header and id fields, so fake them:
+    # FIXME: "drive num" should be number of user-accessible partitions, not 255!
     def bam_read_header_fields(self) -> (int, bytes, bytes):
 #       return 255, b"CMD HD          ", b"HD 1H"   # HD
         return 255, b"CMD FD          ", b"FD 1H"   # FD
 #       return 255, b"CMD RAMLINK     ", b"RL 1H"   # RAMLink   FIXME: check values!
 
+    # FIXME: partition directory should not contain a "blocks free" line!
     def bam_read_free_blocks(self) -> dict:
         # just use all zero for now:
         d = dict()
@@ -2066,9 +2078,18 @@ class _cmdpartitionable(d64):
         optional += " : %08x : " % start_index
         optional += unused2.hex(" ")
         optional += " : %08x " % size_bytes
+        # add data from "device information block":
+        block = self.block_read((0, 5))
+        # (FIXME: CMD HD supports 254 partitions, so the value 56 only works for FD!)
+        optional += "%02x" % block[0 * 56 + index]  # ??
+        optional += " %02x" % block[1 * 56 + index] # these might be total size,
+        optional += "%02x" % block[2 * 56 + index]  # including the gap for
+        optional += "%02x" % block[3 * 56 + index]  # rounding up to full hw sectors
+        optional += "00"    # change display from blocks to bytes
+        #
         return in_use, index, partition_name, partition_type, optional
 
-    def enter(self, which: int) -> object:
+    def enter(self, which: int) -> d64:
         # enter one of the partitions
         supported_types = {
             1: _cmdnative,
@@ -2092,11 +2113,29 @@ class _cmdpartitionable(d64):
         # set partition values so new handler works correctly:
         self.imagefile.partition_set((start_block, block_count))
         # pass "partition" to handler:
-        new_obj._populate(self.imagefile)
+        new_obj = new_obj._populate(self.imagefile)
+        new_obj.drivenum = which    # show partition number as "drive number"
         return new_obj  # tell caller to use the new handler
 
     def geos_get_border_block_ts(self) -> (int, int) or None:
         return None
+
+class _cmdpartitionable(d64):
+    """
+    virtual base class for the three CMD FD series formats.
+    """
+    maxtrack = 81
+
+    def _populate(self, imagefile):
+        # first call parent class
+        super()._populate(imagefile)
+        # then set partition values so we can access partition directory
+        self.imagefile.partition_set(self.partition)
+        # then create parttable object
+        size = self.partition[1] * 256
+        parttable = _cmdparttable(size)
+        parttable._populate(imagefile)
+        return parttable
 
 class _cmdfd1m(_cmdpartitionable):
     name = "CMD DD partitioned"
@@ -2104,19 +2143,19 @@ class _cmdfd1m(_cmdpartitionable):
     # a DNP on a DD disk only uses 3072 blocks, because 3200 is not a multiple of 256.
     # so the last 128 blocks are unused in this case.
     track_length_changes = {1: 40}  # each track has 40 blocks (2 heads * 5 sectors * 1024 bytes)
-    partition = (80 * 40 + 8, 4)
+    partition = (80 * 40, 40)   # last track holds parttable
 
 class _cmdfd2m(_cmdpartitionable):
     name = "CMD FD-2000 partitioned"
     blocks_total = 6480 # 6400 for partitions plus 80 on track 81 (holds partition table)
     track_length_changes = {1: 80}  # each track has 80 blocks (2 heads * 10 sectors * 1024 bytes)
-    partition = (80 * 80 + 8, 4)
+    partition = (80 * 80, 80)   # last track holds parttable
 
 class _cmdfd4m(_cmdpartitionable):
     name = "CMD FD-4000 partitioned"
     blocks_total = 12960    # 12800 for partitions plus 160 on extra track (hold partition table)
     track_length_changes = {1: 160} # each track has 160 blocks (2 heads * 20 sectors * 1024 bytes)
-    partition = (80 * 160 + 8, 4)
+    partition = (80 * 160, 160) # last track holds parttable
 
 ################################################################################
 # wrapper stuff
@@ -2168,7 +2207,7 @@ def DiskImage(filename: str, img_mode = ImgMode.READONLY) -> d64:
     _debug(1, filename, "is a", obj.name, "disk image" + hint + (" with error info." if error_info else "."))
     # FIXME: all the stuff above could be moved to imagefile.__init__(), right?
     img = imagefile(fh, body, img_mode, has_error_chunk=error_info) # create image file object...
-    obj._populate(img)  # ...and pass to dos/drive object
+    obj = obj._populate(img)    # ...and pass to dos/drive object
     return obj
 
 ################################################################################
@@ -2253,6 +2292,7 @@ def show_directory(img, show_all=False, second_charset=False, long=False) -> Non
     freeblocks = img.bam_read_free_blocks()
     #print(freeblocks)
     shown_free = freeblocks["shown"]
+    # FIXME: "blocks free" should honor "second_charset"!
     print("     %d blocks free (+%d reserved)" % (shown_free, freeblocks["reserved"]))
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
     #_debug(1, "%d + %d = %d" % (blocks_total, shown_free, blocks_total + shown_free))
