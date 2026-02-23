@@ -17,6 +17,7 @@ Usage:
     d64.py [dir] IMAGE              display directory
     d64.py create IMAGE             create new image file
     d64.py checkfile IMAGE FILENUM  check blocks of file
+    d64.py delete IMAGE FILENUM     delete file
     d64.py add IMAGE FILE           add file to image
     d64.py bam IMAGE                display block availability map
     d64.py errors IMAGE             display optional error chunk

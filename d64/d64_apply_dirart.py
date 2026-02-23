@@ -10,9 +10,8 @@ def get_dir_art(diskimage):
     """
     artdisk = d64util.DiskImage(diskimage)
     art = []
-    for entry in artdisk.directory_read_entries(include_invisible=False):
-        bin30 = entry[1]    # [0] would be index, we only want the data
-        art.append(bin30[3:19]) # and we only keep the name field
+    for entry in artdisk.directory_read(include_invisible=False):
+        art.append(entry.name())    # we only keep the name field
     print("Found %d entries of dir art." % len(art))
     return art
 
@@ -24,9 +23,8 @@ def apply_dir_art(art, targetdisk, targetskip, use_all_art, add_spacer):
     img = d64util.DiskImage(targetdisk, d64util.ImgMode.WRITEBACK)
     # get current directory contents
     olddir = []
-    for entry in img.directory_read_entries(include_invisible=False):
-        bin30 = entry[1]    # [0] would be index, we only want the data
-        olddir.append(bin30)
+    for entry in img.directory_read(include_invisible=False):
+        olddir.append(entry.bin30)
     print("Original directory has %d entries." % len(olddir))
     # now build new directory
     newdir = []

@@ -68,6 +68,7 @@ geos_file_types = {
     12: b" BOO ",  # system boot file
     13: b" TMP ",  # temporary
     14: b" AUT ",  # auto-execute file
+#   21:     ?   used by "wheels"
 }
 
 class d64Exception(Exception):
@@ -206,6 +207,80 @@ class imagefile(object):
             raise Exception("Called writeback() in writethrough mode.")
         else:
             sys.exit("BUG: invalid image mode")
+
+################################################################################
+# helper class
+
+class DirEntry(object):
+    """
+    This class describes a single directory entry.
+    """
+    def __init__(self, idx, img, ts, offset, bin30):
+        self.idx = idx
+        self.src_img = img
+        self.src_ts = ts
+        self.src_offset = offset
+        self.bin30 = bin30
+
+    def in_use(self):
+        return self.bin30[0] != 0
+
+    def type(self):
+        return self.bin30[0]
+
+    def ts(self):
+        """ return start track/sector as tuple """
+        return self.bin30[1], self.bin30[2]
+
+    def name(self):
+        return self.bin30[3:19]
+
+    def has_second_chain(self):
+        return self.bin30[19] != 0  # track != 0 -> there are side sectors!
+
+    def second_ts(self):
+        """ return track/sector of side sector chain as tuple """
+        return self.bin30[19], self.bin30[20]   # t/s of side sector (REL) or info block (GEOS)
+
+    def record_length(self):
+        return self.bin30[21]   # GEOS: 0=normal file, 1=VLIR file
+
+    def geos_type(self):
+        return self.bin30[22]
+
+    def datetime_str(self):
+        """ return human-readable date and time or hex dump if nonsense """
+        year, month, day, hour, minute = self.bin30[23:28]
+        if year >= 80:
+            year += 1900    # one source claims "years since 1900"
+        else:
+            year += 2000    # but "wheels" seems to use 2 for 2002
+        if month and day:
+            return "%04d-%02d-%02d %02d:%02d" % (year, month, day, hour, minute)
+        else:
+            return self.bin30[23:28].hex(" ")
+
+    def block_count(self):
+        return int.from_bytes(self.bin30[28:30], "little")
+
+    def file_type_text(self):
+        """ return printable type """
+        cbm_type = self.bin30[0]
+        geos_type = self.bin30[22]
+        if ((cbm_type & 15) == 3) and geos_type != 0:
+            type = geos_file_types.get(geos_type, b" ??? ")
+        else:
+            type = self.src_img.filetype(cbm_type)
+        return type
+
+    def free(self):
+        """ set type byte to zero """
+        self.bin30[0] = 0   # mark entry as free
+
+    def writeback(self):
+        dirblock = self.src_img.block_read(self.src_ts)
+        dirblock[self.src_offset:self.src_offset + 30] = self.bin30
+        self.src_img.block_write(self.src_ts, dirblock)
 
 ################################################################################
 # virtual base class
@@ -427,7 +502,7 @@ class d64(object):
     #   automatically when opening the image file.
     # it _could_ switch the image to read-only mode, but that's bad because not
     #   all writes need a valid BAM.
-    # ...and if this tool ever gets a "validate" fn, it needs to be fine-grained
+    # ...and if this tool ever gets an "fsck" fn, it needs to be fine-grained
     #   about what the user actually wants to be fixed.
     def check_bam_counters(self, alt_maxtrack=None) -> None:
         """
@@ -698,9 +773,9 @@ class d64(object):
             return block[0xab], block[0xac]
         return None
 
-    def _directory_iter(self, start_ts: (int, int)):
+    def _directory_iter(self, start_ts: (int, int), number):
         """
-        Return directory entries as (30-byte sequence, wherefound) tuples.
+        Read directory starting at given t/s, return items as DirEntry objects.
         """
         for ts, block in self.linkptrs_follow(start_ts):
             if block[0] == 0:
@@ -709,73 +784,51 @@ class d64(object):
                    print("WARNING: sector value of final dir block is %d instead of 255!" % block[1], file=sys.stderr)
             readidx = 2
             for i in range(8):
-                yield block[readidx:readidx + 30], (ts, readidx)
+                yield DirEntry(number, self, ts, readidx, block[readidx:readidx + 30])
                 readidx += 32
+                number += 1
 
-    def directory_read_entries(self, include_invisible=False):
+    # FIXME: add optional flag to include/exclude geos border block?
+    def directory_read(self, include_invisible=False):
         """
-        Return directory entries as tuples:
-        (index, raw entry (30 bytes), location, tuple might grow in future...)
+        Return directory entries as DirEntry objects.
         Setting include_invisible to True yields even the empty entries.
         """
         entry_number = 0    # index, so caller can unambiguously reference each entry
         # process directory
-        for bin30, location in self._directory_iter(self.directory_ts):
-            if bin30[0] or include_invisible:
-                yield entry_number, bin30, location # CAUTION, maybe more fields will get added in future!
-            entry_number += 1
+        for entry in self._directory_iter(self.directory_ts, entry_number):
+            if entry.in_use() or include_invisible:
+                yield entry
+            entry_number = entry.idx + 1
         # process GEOS "border block", if there is one:
+        # (using next eight index values)
         borderblock_ts = self.geos_get_border_block_ts()
         if borderblock_ts:
             _debug(1, "Contents of GEOS border block:")
-            for bin30, location in self._directory_iter(borderblock_ts):
-                if bin30[0] or include_invisible:
-                    yield entry_number, bin30, location # CAUTION, maybe more fields will get added in future!
-                entry_number += 1
+            for entry in self._directory_iter(borderblock_ts, entry_number):
+                if entry.in_use() or include_invisible:
+                    yield entry
 
-    def direntry_get(self, which: int) -> bytes or bytearray:
+    def direntry_get(self, which: int) -> DirEntry:
         """
         Return a single dir entry, specified as index.
         """
-        for entry in self.directory_read_entries(include_invisible=True):
-            if entry[0] == which:
-                return entry[1] # only return bin30 data
-            if entry[0] > which:
+        for entry in self.directory_read(include_invisible=True):
+            if entry.idx == which:
+                return entry
+            if entry.idx > which:
                 sys.exit("BUG: This cannot happen!")
         sys.exit("Error: Specified directory index does not exist.")
 
-    def direntry_cook(self, index: int, bin30: bytes or bytearray) -> (bool, int, str, str, str):
+    def direntry_cook(self, entry: DirEntry) -> (bool, int, str, str, str):
         """
         Convert directory entry to what is shown to user
         """
-        # read fields
-        cbm_type = bin30[0]
-        t_s = bin30[1:3]
-        file_name = bin30[3:19]
-        second_t_s = bin30[19:21]   # t/s of side sector (REL) or info block (GEOS)
-        record_length = bin30[21:22]    # GEOS: 0=normal file, 1=VLIR file
-        geos_type = bin30[22:23]
-        year = bin30[23]    # year
-        month_day = bin30[24:26]    # month, day
-        time = bin30[26:28] # hour, minute
-        block_count = bin30[28:30]
-        # process
-        in_use = cbm_type != 0
-        if ((cbm_type & 15) == 3) and geos_type[0] != 0:
-            file_type = geos_file_types.get(geos_type[0], b" ??? ")
-        else:
-            file_type = self.filetype(cbm_type)
-        if year >= 80:
-            year += 1900    # one source claims "years since 1900"
-        else:
-            year += 2000    # but "wheels" seems to use 2 for 2002
-        block_count = int.from_bytes(block_count, "little")
-        optional = " : " + t_s.hex(" ") + " : " + second_t_s.hex(" ") + " " + record_length.hex(" ") + " " + geos_type.hex(" ") + " "
-        if all(month_day):
-            optional += ": %04d-%02d-%02d %02d:%02d" % (year, month_day[0], month_day[1], time[0], time[1])
-        else:
-            optional += bin30[23:28].hex(" ")
-        return in_use, block_count, file_name, file_type, optional
+        optional = " : " + entry.bin30[1:3].hex(" ")
+        optional += " : " + entry.bin30[19:21].hex(" ") + " " + entry.bin30[21:22].hex(" ")
+        optional += " : " + entry.bin30[22:23].hex(" ")
+        optional += " : " + entry.datetime_str()
+        return entry.in_use(), entry.block_count(), entry.name(), entry.file_type_text(), optional
 
     def directory_write(self, new_dir: list) -> None:   # TODO: add flag for "accept oversized dirs and use other tracks"
         """
@@ -1079,67 +1132,44 @@ class d64(object):
         """
         check blocks of file (only really useful for REL files)
         """
-        bin30 = self.direntry_get(index)
-        # read fields
-        cbm_type = bin30[0]
-        t_s = bin30[1], bin30[2]
-        #file_name = bin30[3:19]
-        second_t_s = bin30[19], bin30[20]   # t/s of side sector (REL) or info block (GEOS)
-        record_length = bin30[21]   # GEOS: 0=normal file, 1=VLIR file
-        geos_type = bin30[22:23]
-        block_count = int.from_bytes(bin30[28:30], "little")
+        entry = self.direntry_get(index)
         # std file body:
         print("Checking block chain:", end="")
-        std_chain = list(self.linkptrs_follow(t_s, display=True, include_blocks=False))
+        std_chain = list(self.linkptrs_follow(entry.ts(), display=True, include_blocks=False))
         actual_blocks = len(std_chain)
-        if second_t_s[0]:
+        if entry.has_second_chain():
             # side sectors:
             print("Checking side sector chain:", end="")
-            second_chain = list(self.linkptrs_follow(second_t_s, display=True))
+            second_chain = list(self.linkptrs_follow(entry.second_ts(), display=True))
             actual_blocks += len(second_chain)
         # check block count
-        if actual_blocks != block_count:
+        if actual_blocks != entry.block_count():
             print(f"Block count in directory is wrong ({block_count}), should be {actual_blocks}.")
         # for REL files, check contents of side sectors:
-        if (cbm_type & 15) == 4:
-            self.check_side_sectors(std_chain, second_chain, record_length)
+        if (entry.type() & 15) == 4:
+            self.check_side_sectors(std_chain, second_chain, entry.record_length())
         #
 
     def delete_file(self, index: int) -> None:
         """
         release all blocks of file and remove its directory entry
         """
-        bin30 = self.direntry_get(index)
-        # read fields
-        cbm_type = bin30[0]
-        t_s = bin30[1], bin30[2]
-        #file_name = bin30[3:19]
-        second_t_s = bin30[19], bin30[20]   # t/s of side sector (REL) or info block (GEOS)
-        #record_length = bin30[21]   # GEOS: 0=normal file, 1=VLIR file
-        #geos_type = bin30[22:23]
-        #block_count = int.from_bytes(bin30[28:30], "little")
-        if cbm_type == 0:
+        entry = self.direntry_get(index)
+        if not entry.in_use():
             print("Directory entry is unused.")
             return
         # std file body:
         print("Reading block chain:", end="")
-        chain = list(self.linkptrs_follow(t_s, display=True, include_blocks=False))
-        if second_t_s[0]:
+        chain = list(self.linkptrs_follow(entry.ts(), display=True, include_blocks=False))
+        if entry.has_second_chain():
             # side sectors:
             print("Reading side sector chain:", end="")
-            chain += list(self.linkptrs_follow(second_t_s, display=True, include_blocks=False))
+            chain += list(self.linkptrs_follow(entry.second_ts(), display=True, include_blocks=False))
         print("Releasing blocks.")
         self.bam_release_blocks(chain)
         # remove dir entry
-        for entry in self.directory_read_entries():
-            if entry[0] == index:
-                # entry[1] is actual bin30 entry
-                ts, offset = entry[2]
-                dirblock = self.block_read(ts)
-                dirblock[offset] = 0    # mark entry as free
-                self.block_write(ts, dirblock)
-                return
-        raise Exception("This cannot happen, dir entry was found before but not now?!")
+        entry.free()
+        entry.writeback()
 
     # TODO: maybe add optional args for
     #   - use alternative sector interleave
@@ -1814,22 +1844,20 @@ class _1581(d64):
 
     def enter(self, which: int) -> d64:
         # enter 1581-style "CBM" partition
-        bin30 = self.direntry_get(which)
-        filetype = bin30[0] & 7
+        entry = self.direntry_get(which)
+        filetype = entry.type() & 7
         if filetype != 5:
             sys.exit('Error: Chosen directory entry has type %d instead of 5 ("CBM")!' % filetype)
-        start_track = bin30[1]
-        start_sector = bin30[2]
+        start_track, start_sector = entry.ts()
         if start_sector != 0:
             sys.exit('Error: Chosen CBM partition starts at sector %d, not 0!' % start_sector)
-        block_count = int.from_bytes(bin30[28:30], "little")
+        block_count = entry.block_count()
         if block_count < 120:
             sys.exit('Error: Chosen CBM partition has a size of %d blocks (need at least 120 blocks)!' % block_count)
         if block_count % 40:
             sys.exit('Error: Chosen CBM partition has a size of %d blocks (not a multiple of 40)!' % block_count)
         # ok, let's do it then
         self.header_ts = (start_track, start_sector)
-        self.header_offset = 4
         self.bam_blocks = [(start_track, 1), (start_track, 2)]
         self.directory_ts = (start_track, 3)
         return self # we keep using this "1581" object
@@ -1947,15 +1975,13 @@ class _cmdnative(d64):
 
     def enter(self, which: int) -> d64:
         # enter CMD-style sub-directory
-        bin30 = self.direntry_get(which)
-        filetype = bin30[0] & 7
+        entry = self.direntry_get(which)
+        filetype = entry.type() & 7
         if filetype != 6:
             sys.exit('Error: Chosen directory entry has type %d instead of 5 ("DIR")!' % filetype)
-        start_track = bin30[1]
-        start_sector = bin30[2]
+        start_track, start_sector = entry.ts()
         # ok, let's do it then
         self.header_ts = (start_track, start_sector)
-        self.header_offset = 4
         headerblock = self.block_read(self.header_ts)
         self.directory_ts = (headerblock[0], headerblock[1])
         return self # we keep using this "CMD native" object
@@ -2065,17 +2091,14 @@ class _cmdparttable(d64):
             t = b" 0X%2X" % filetype    # unsupported types are shown as hex
         return t
 
-    def direntry_cook(self, index: int, bin30: bytes or bytearray) -> (bool, int, str, str, str):
+    def direntry_cook(self, entry: DirEntry) -> (bool, int, str, str, str):
         """
         Convert entry from partition directory to what is shown to user
         """
-        in_use = bin30[0] != 0
-        partition_type = self.filetype(bin30[0])
-        unused1 = bin30[1:3]    # normally t/s
-        partition_name = bin30[3:19]
-        start_index = int.from_bytes(bin30[19:22], "big") * 512
-        unused2 = bin30[22:27]
-        size_bytes = int.from_bytes(bin30[27:30], "big") * 512
+        unused1 = entry.bin30[1:3]  # normally t/s
+        start_index = int.from_bytes(entry.bin30[19:22], "big") * 512
+        unused2 = entry.bin30[22:27]
+        size_bytes = int.from_bytes(entry.bin30[27:30], "big") * 512
         optional = " : " + unused1.hex(" ")
         optional += " : %08x : " % start_index
         optional += unused2.hex(" ")
@@ -2083,13 +2106,13 @@ class _cmdparttable(d64):
         # add data from "device information block":
         block = self.block_read((0, 5))
         # (FIXME: CMD HD supports 254 partitions, so the value 56 only works for FD!)
-        optional += "%02x" % block[0 * 56 + index]  # ??
-        optional += " %02x" % block[1 * 56 + index] # these might be total size,
-        optional += "%02x" % block[2 * 56 + index]  # including the gap for
-        optional += "%02x" % block[3 * 56 + index]  # rounding up to full hw sectors
+        optional += "%02x" % block[0 * 56 + entry.idx]  # ??
+        optional += " %02x" % block[1 * 56 + entry.idx] # these might be total size,
+        optional += "%02x" % block[2 * 56 + entry.idx]  # including the gap for
+        optional += "%02x" % block[3 * 56 + entry.idx]  # rounding up to full hw sectors
         optional += "00"    # change display from blocks to bytes
         #
-        return in_use, index, partition_name, partition_type, optional
+        return entry.in_use(), entry.idx, entry.name(), self.filetype(entry.type()), optional
 
     def enter(self, which: int) -> d64:
         # enter one of the partitions
@@ -2099,14 +2122,14 @@ class _cmdparttable(d64):
             3: _1571,
             4: _1581
         }
-        bin30 = self.direntry_get(which)
-        partition_type = bin30[0]
+        entry = self.direntry_get(which)
+        partition_type = entry.type()
         if partition_type not in supported_types:
             sys.exit('Error: Chosen directory entry has type %d instead of 1/2/3/4!' % partition_type)
         chosen_type = supported_types[partition_type]
         # ok, let's do it then
-        start_block = int.from_bytes(bin30[19:22], "big") * 2   # convert 512-byte sectors to 256-byte blocks
-        block_count = int.from_bytes(bin30[27:30], "big") * 2   # convert 512-byte sectors to 256-byte blocks
+        start_block = int.from_bytes(entry.bin30[19:22], "big") * 2 # convert 512-byte sectors to 256-byte blocks
+        block_count = int.from_bytes(entry.bin30[27:30], "big") * 2 # convert 512-byte sectors to 256-byte blocks
         # create new handler object:
         if chosen_type == _cmdnative:
             new_obj = _cmdnative(block_count * 256)
@@ -2273,17 +2296,15 @@ def show_directory(img, show_all=False, second_charset=False, long=False) -> Non
     nonempty = 0
     empty = 0
     blocks_total = 0    # for debug output
-    for entry in img.directory_read_entries(include_invisible=True):
-        index = entry[0]
-        bin30 = entry[1]
-        in_use, line_number, name, type, optional = img.direntry_cook(index, bin30)
+    for entry in img.directory_read(include_invisible=True):
+        in_use, line_number, name, type, optional = img.direntry_cook(entry)
         if in_use:
             nonempty += 1
         else:
             empty += 1
             if show_all == False:
                 continue
-        line = ('%3d: ' % index) + str(line_number).ljust(4) + " "
+        line = ('%3d: ' % entry.idx) + str(line_number).ljust(4) + " "
         line += from_petscii(_quote(name), second_charset)
         line += from_petscii(type, second_charset)
         if long:
@@ -2331,40 +2352,34 @@ def extract_all(img: d64, full=False) -> None:
     """
     Extract all files to current directory.
     """
-    for entry in img.directory_read_entries(include_invisible=full):
-        index = entry[0]
-        bin30 = entry[1]
-        filetype = bin30[0]
-        ts = bin30[1], bin30[2]
-        cbmname = from_petscii(bin30[3:19], second_charset=True)
+    for entry in img.directory_read(include_invisible=full):
+        cbmname = from_petscii(entry.name(), second_charset=True)
         cbmname = cbmname.replace("=", "=3D")
         cbmname = cbmname.replace("/", "=2F")
-        outname = ('%03d-' % index) + cbmname
-        outname += "."
-        outname += from_petscii(img.filetype(filetype), second_charset=True)
-        alt_ts = bin30[19], bin30[20]   # side sector chain or GEOS info block
+        outname = ('%03d-' % entry.idx) + cbmname
+        outname = outname.rstrip() + "."
+        outname += from_petscii(img.filetype(entry.type()), second_charset=True).strip()
         # FIXME: make this into some "extract entry" method so there is no need
         # to check for REL/CBM (which would fail in CMD partition tables anyway)
         # REL file?
-        if (filetype & 15) == 4:
+        if (entry.type() & 15) == 4:
             # for REL files, add record size to name
-            outname += "%03d" % bin30[21]
-            extract_block_chain(img, ts, outname)
+            outname += "%03d" % entry.record_size()
+            extract_block_chain(img, entry.ts(), outname)
             # and for now, also extract the side sector chain:
-            extract_block_chain(img, alt_ts, outname + ".ssc")
+            extract_block_chain(img, entry.second_ts(), outname + ".ssc")
             continue
         # "CBM"-style partition?
-        if (filetype & 15) == 5:
+        if (entry.type() & 15) == 5:
             # CBM files are partitions, i.e. without link pointers
-            blockcount = int.from_bytes(bin30[28:30], "little")
-            extract_block_sequence(img, ts, outname, blockcount)
+            extract_block_sequence(img, entry.ts(), outname, entry.blockcount())
             continue
         # extract GEOS info block
-        if alt_ts[0]:
-            extract_block_chain(img, alt_ts, outname + ".infoblock")
+        if entry.has_second_chain():
+            extract_block_chain(img, entry.second_ts(), outname + ".infoblock")
         # GEOS VLIR file?
-        if bin30[21] == 1 and bin30[22] != 0:
-            vlir = list(img.linkptrs_follow(ts))
+        if entry.geos_type() and entry.bin30[21] == 1:
+            vlir = list(img.linkptrs_follow(entry.ts()))
             if len(vlir) == 1:
                 # extract all 127 possible records with name postfix:
                 dummy, vlir_block = vlir[0]
@@ -2377,7 +2392,7 @@ def extract_all(img: d64, full=False) -> None:
                 continue
             print("looks like a GEOS VLIR file, but isn't! (too long)")
         # everything else:
-        extract_block_chain(img, ts, outname)
+        extract_block_chain(img, entry.ts(), outname)
 
 def _process_file(file: str, show_all=False, second_charset=False, long=False, extract=False, path=None) -> None:
     if path == None:
