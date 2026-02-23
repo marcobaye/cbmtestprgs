@@ -251,6 +251,7 @@ class d64(object):
         """
         Called after correct subclass has been instantiated.
         """
+        _debug(1, "Entering image of type", self.name)
         self.imagefile = imagefile
         # build lookup tables for "sectors per track" and "blocks before track":
         self._sectors_of_track = {}
@@ -2017,6 +2018,7 @@ class _cmdparttable(d64):
     """
     class for the partition table at the end of CMD partitionable formats.
     """
+    name = "CMD partition table"
     mintrack = 0    # needed to get valid link pointers in directory:
     # there are eight blocks before the (1,0) block, so we pretend to have a
     # track zero and each track has eight blocks, i.e. 2048 bytes.
