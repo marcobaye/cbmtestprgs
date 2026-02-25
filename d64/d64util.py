@@ -960,13 +960,8 @@ class d64(object):
             interleave = self.std_file_interleave
         if cand_track is None:
             cand_track = prev_track
-        # to get a candidate sector, add interleave:
-        cand_sector = prev_sector + interleave
-        # and wrap around if out of range:
-        num_sectors = self.sectors_of_track(cand_track)
-        # some clown may try to use an interleave of "100", so use "while" instead of "if":
-        while cand_sector >= num_sectors:
-            cand_sector -= num_sectors
+        # to get a candidate sector, add interleave and wrap around if out of range:
+        cand_sector = (prev_sector + interleave) % self.sectors_of_track(cand_track)
         # just do what the DOS does, allocate the next possible sector:
         return self.bam_allocate_block(cand_track, cand_sector, exact=False)
 
@@ -985,9 +980,9 @@ class d64(object):
 #t1             |             tmax  (when starting below dir)
 #tmax           |              t1   (when starting above dir)
 #|              |               |
-#<=======........................   step 1, scan from start pos to near edge
-#................===============>   step 2, scan from dir to far edge
-#........<======.................   step 3, scan from dir to start pos
+#<<<<<<<<........................   step 1, scan from start pos to near edge
+#................>>>>>>>>>>>>>>>>   step 2, scan from dir to far edge
+#........<<<<<<<.................   step 3, scan from dir to start pos
         # if this is the first block, find one near directory:
         if prev_ts is None:
             return self._bam_get_new_start_block()
