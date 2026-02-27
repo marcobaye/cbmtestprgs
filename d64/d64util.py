@@ -2054,12 +2054,16 @@ class _cmdparttable(d64):
         self.track_length_changes = {0: 8}
         self.bam_counters = dict()
 
-    # partition table does not really have header and id fields, so fake them:
-    # FIXME: "drive num" should be number of user-accessible partitions, not 255!
     def bam_read_header_fields(self) -> (int, bytes, bytes):
-#       return 255, b"CMD HD          ", b"HD 1H"   # HD
-        return 255, b"CMD FD          ", b"FD 1H"   # FD
-#       return 255, b"CMD RAMLINK     ", b"RL 1H"   # RAMLink   FIXME: check values!
+        # "drive number" should be number of user-accessible partitions,
+        # so we iterate over entries and keep the last index:
+        drive_num = 0
+        for entry in self.directory_read():
+            drive_num = entry.idx
+        # now fake header and id fields:
+        #return drive_num, b"CMD HD          ", b"HD 1H"
+        #return drive_num, b"CMD RAMLINK     ", b"RL 1H" # FIXME: check values!
+        return drive_num, b"CMD FD          ", b"FD 1H"
 
     def check_bam_counters(self):
         # partitions use consecutive space, so there is not really a BAM, so
