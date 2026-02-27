@@ -316,6 +316,7 @@ class d64(object):
     allow_1571_8250_trick = False   # this flag says whether the var below can be changed
     sides_interleave    = 0 # track diff between sides, zero means "do not interleave sides"
     drivenum = 0    # "drive number" in directory, or partition number on CMD hw
+    dir_includes_blocks_free_line = True    # False in CMD partition directory
 
     def __init__(self):
         if "blocks_total" not in self.__dir__():
@@ -2045,6 +2046,7 @@ class _cmdparttable(d64):
     # track zero and each track has eight blocks, i.e. 2048 bytes.
     #maxtrack depends on FD type
     directory_ts = (1, 0)
+    dir_includes_blocks_free_line = False
 
     def __init__(self, size):
         self.maxtrack = (size // 2048) -1
@@ -2058,17 +2060,6 @@ class _cmdparttable(d64):
 #       return 255, b"CMD HD          ", b"HD 1H"   # HD
         return 255, b"CMD FD          ", b"FD 1H"   # FD
 #       return 255, b"CMD RAMLINK     ", b"RL 1H"   # RAMLink   FIXME: check values!
-
-    # FIXME: partition directory should not contain a "blocks free" line!
-    def bam_read_free_blocks(self) -> dict:
-        # just use all zero for now:
-        d = dict()
-        for track in range(1, self.maxtrack + 1):
-            d[track] = 0
-        d["all"] = 0
-        d["reserved"] = 0
-        d["shown"] = 0
-        return d
 
     def check_bam_counters(self):
         # partitions use consecutive space, so there is not really a BAM, so
@@ -2090,7 +2081,10 @@ class _cmdparttable(d64):
         """
         Convert entry from partition directory to what is shown to user
         """
-        unused1 = entry.bin30[1:3]  # normally t/s
+        unused1 = entry.bin30[1:3]  # t/s in cbm dos, seems to be always zero here.
+        # start and size are given in 512-byte-blocks, even on FD where hw sectors
+        # have 1024 bytes. I guess this is because the format of the partition
+        # directory originated on the HD where hw sectors have 512 bytes:
         start_index = int.from_bytes(entry.bin30[19:22], "big") * 512
         unused2 = entry.bin30[22:27]
         size_bytes = int.from_bytes(entry.bin30[27:30], "big") * 512
@@ -2099,13 +2093,21 @@ class _cmdparttable(d64):
         optional += unused2.hex(" ")
         optional += " : %08x " % size_bytes
         # add data from "device information block":
+        # CAUTION: CMD HD supports 254 partitions instead of 31, so this format with
+        # several 56-byte tables must be FD-only!
         block = self.block_read((0, 5))
-        # (FIXME: CMD HD supports 254 partitions, so the value 56 only works for FD!)
-        optional += "%02x" % block[0 * 56 + entry.idx]  # ??
-        optional += " %02x" % block[1 * 56 + entry.idx] # these might be total size,
-        optional += "%02x" % block[2 * 56 + entry.idx]  # including the gap for
-        optional += "%02x" % block[3 * 56 + entry.idx]  # rounding up to full hw sectors
-        optional += "00"    # change display from blocks to bytes
+        # TODO: what kind of info does this first table hold?
+        optional += "%02x" % block[0 * 56 + entry.idx]
+        # now read size:
+        # this looks like it encodes something like a "real size" field: DNP partition
+        # sizes must be a multiple of 64KiB, but DD disks hold 800K=12*64K+32K. so the
+        # partition directory says "size = 768K" and the device information block says
+        # "size = 800K".
+        real_size = (block[1 * 56 + entry.idx] << 16)
+        real_size |= (block[2 * 56 + entry.idx] << 8)
+        real_size |= (block[3 * 56 + entry.idx])
+        real_size *= 512 # convert from HD blocks to bytes
+        optional += " %08x" % real_size
         #
         return entry.in_use(), entry.idx, entry.name(), self.filetype(entry.type()), optional
 
@@ -2307,11 +2309,11 @@ def show_directory(img, show_all=False, second_charset=False, long=False) -> Non
         print(line)
         if in_use:
             blocks_total += line_number
-    freeblocks = img.bam_read_free_blocks()
-    #print(freeblocks)
-    shown_free = freeblocks["shown"]
-    # FIXME: "blocks free" should honor "second_charset"!
-    print("     %d blocks free (+%d reserved)" % (shown_free, freeblocks["reserved"]))
+    if img.dir_includes_blocks_free_line:
+        freeblocks = img.bam_read_free_blocks()
+        #print(freeblocks)
+        shown_free = freeblocks["shown"]
+        print("     %d %s (+%d reserved)" % (shown_free, from_petscii(b"BLOCKS FREE", second_charset), freeblocks["reserved"]))
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
     #_debug(1, "%d + %d = %d" % (blocks_total, shown_free, blocks_total + shown_free))
 
