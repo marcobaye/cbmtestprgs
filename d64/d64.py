@@ -6,7 +6,6 @@ import sys  # for sys.stderr and sys.exit
 def show_help():
     # TODO:
     #d64.py create IMAGE             create new empty disc image
-    #d64.py addfile IMAGE FILE       add file to image
     #d64.py extract [--full] [--p00] IMAGE [FILENUM]     extract files from disc image
     #d64.py check IMG.D64
     print("""
@@ -21,6 +20,7 @@ Usage:
     d64.py add IMAGE FILE           add file to image
     d64.py bam IMAGE                display block availability map
     d64.py errors IMAGE             display optional error chunk
+    d64.py old X Y Z...             pass arguments to d64util.py
 """)
 
 def mode_create():
@@ -124,6 +124,9 @@ def _main():
         mode = sys.argv[1]
         if mode == "help":
             not_yet()
+        elif mode == "old":
+            sys.argv = sys.argv[0:1] + sys.argv[2:]
+            d64util._main()
         elif mode == "dir":
             not_yet()
         elif mode == "create":
@@ -141,6 +144,7 @@ def _main():
         elif mode == "errors":
             mode_errors()
         else:
+            print("Mode not recognized, calling d64util.py instead.")
             d64util._main()
 
 if __name__ == "__main__":
