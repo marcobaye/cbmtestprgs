@@ -2283,8 +2283,13 @@ def _quote(name16: bytes) -> bytes:
     """
     Helper function to add opening and closing quotes at correct positions.
     """
-    name16 += b"\xa0"   # appending a shift-space and then replacing the first...
-    return b'"' + name16.replace(b"\xa0", b'"', 1)   # ...should do the trick.
+    name16 += b"\xa0"   # append a shift-space
+    # does name already contain a double quote?
+    if b'"' in name16:
+        name16 = b'"' + name16  # then that's it
+    else:
+        name16 = b'"' + name16.replace(b"\xa0", b'"', 1)    # change 1st shift-space to double quote
+    return name16
 
 def show_directory(img, show_all=False, second_charset=False, long=False) -> None:
     """
@@ -2317,7 +2322,7 @@ def show_directory(img, show_all=False, second_charset=False, long=False) -> Non
         freeblocks = img.bam_read_free_blocks()
         #print(freeblocks)
         shown_free = freeblocks["shown"]
-        print("     %d %s (+%d reserved)" % (shown_free, from_petscii(b"BLOCKS FREE", second_charset), freeblocks["reserved"]))
+        print("     %d %s (+%d reserved)" % (shown_free, from_petscii(b"BLOCKS FREE.", second_charset), freeblocks["reserved"]))
     print("(%d directory entries, +%d empty)" % (nonempty, empty))
     #_debug(1, "%d + %d = %d" % (blocks_total, shown_free, blocks_total + shown_free))
 
