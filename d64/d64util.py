@@ -1229,6 +1229,26 @@ class d64(object):
         else:
             self.sides_interleave = 0   # default
 
+    def change_title(self, title: bytes) -> None:
+        """
+        Set title displayed in directory.
+        """
+        assert len(title) == 16, "New title does not have length 16"
+        block = self.block_read(self.header_ts)
+        of = self.header_offset
+        block[of:of+16] = title
+        self.block_write(self.header_ts, block)
+
+    def change_id5(self, id5: bytes) -> None:
+        """
+        Set 5-char "ID" displayed in directory.
+        """
+        assert len(id5) == 5, "New ID does not have length 5"
+        block = self.block_read(self.header_ts)
+        of = self.header_offset + 18    # 16-char name, two shift-spaces, then 5-char ID
+        block[of:of+5] = id5
+        self.block_write(self.header_ts, block)
+
     # TODO: add function for "force 1571 interleave (6) on 1541 image"
 
     # TODO: add function for "force 1541 interleave (10) on 1571 image"
@@ -2238,6 +2258,40 @@ def DiskImage(filename: str, img_mode = ImgMode.READONLY) -> d64:
 
 ################################################################################
 # "main program"
+
+_petscii_lookup = {
+    "[":    91,
+    "\\":   92,
+    "]":    93,
+    "^":    94,
+    "_":    95,
+    "`":    96,
+#
+    "£":    92,
+    "↑":    94,
+    "←":    95,
+    "━":    96,
+}
+
+def to_petscii(utf8: str) -> bytes:
+    """ Convert ASCII/UTF8 string to PetSCII. """
+    result = []
+    for char in utf8:
+        if char in _petscii_lookup:
+            result.append(_petscii_lookup[char])
+        else:
+            cc = ord(char)
+            if cc >= 32 and cc <= 64:
+                result.append(cc)   #    !"#$%&'()*+,-./0123456789:;<=>? and @
+            elif cc >= 65 and cc <= 90:
+                result.append(cc + 128)  # uppercase letters
+            elif cc >= 97 and cc <= 122:
+                result.append(cc - 32)  # lowercase letters
+            elif cc >= 123 and cc <= 126:
+                result.append(cc)   # {|}~
+            else:
+                raise Exception("Invalid character when converting to PetSCII.")
+    return bytes(result)
 
 _petscii_graphics = (
     "        (control  codes)        " +
