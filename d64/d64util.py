@@ -2283,13 +2283,14 @@ def _quote(name16: bytes) -> bytes:
     """
     Helper function to add opening and closing quotes at correct positions.
     """
-    name16 += b"\xa0"   # append a shift-space
-    # does name already contain a double quote?
-    if b'"' in name16:
-        name16 = b'"' + name16  # then that's it
-    else:
-        name16 = b'"' + name16.replace(b"\xa0", b'"', 1)    # change 1st shift-space to double quote
-    return name16
+    # cbm dos seems to do this:
+    # "replace the first shift-space with a double quote, unless there
+    # has already been a double quote."
+    result = name16 + b'\xa0"'  # append shift-space (and double quote as sentinel)
+    ss = result.find(b"\xa0")
+    if ss < result.find(b'"'):
+        result = result[:ss] + b'"' + result[ss+1:] # overwrite shift-space with double quote
+    return b'"' + result[:17]   # add opening quote, drop sentinel
 
 def show_directory(img, show_all=False, second_charset=False, long=False) -> None:
     """
