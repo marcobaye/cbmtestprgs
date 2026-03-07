@@ -1124,11 +1124,12 @@ class d64(object):
             if block[16:16+len(pointer_bytes)] != pointer_bytes:
                 print(f"Side sector {index} has wrong pointers to data blocks.")
 
-    def check_file(self, index: int) -> None:
+    def direntry_check_allocation(self, entry: DirEntry | int) -> None:
         """
         check blocks of file (only really useful for REL files)
         """
-        entry = self.direntry_get(index)
+        if type(entry) is int:
+            entry = self.direntry_get(entry)
         # std file body:
         print("Checking block chain:", end="")
         std_chain = list(self.linkptrs_follow(entry.ts(), display=True, include_blocks=False))
@@ -1146,14 +1147,43 @@ class d64(object):
             self.check_side_sectors(std_chain, second_chain, entry.record_length())
         #
 
-    def delete_file(self, index: int) -> None:
+    def direntry_get_body(self, entry: DirEntry | int): # FIXME - yields file body in chunks!
+        """
+        yield file body chunk by chunk
+        """
+        if type(entry) is int:
+            entry = self.direntry_get(entry)
+        filetype = entry.type() & 7
+        # "old" file types:
+        if filetype != 5:
+            # FIXME - this code treats DEL entries like SEQ/PRG/USR/REL, which
+            # will do the wrong thing if the deleted entry had type CBM!
+            for ts, block in self.linkptrs_follow(entry.ts()):
+                if block[0] != 0:
+                    last_valid = 255
+                else:
+                    last_valid = block[1]
+                yield block[2:last_valid+1]
+        else:
+            # "CBM" file type:
+            lba = self.ts_to_lba(entry.ts())
+            block_count = entry.block_count()
+            for idx in range(block_count):
+                yield self.imagefile.block_read(lba + idx)
+
+    def direntry_delete(self, entry: DirEntry | int) -> None:
         """
         release all blocks of file and remove its directory entry
         """
-        entry = self.direntry_get(index)
+        if type(entry) is int:
+            entry = self.direntry_get(entry)
         if not entry.in_use():
             print("Directory entry is unused.")
             return
+        filetype = entry.type() & 7
+        # "CBM" file type:
+        if filetype == 5:
+            raise Exception("Deleting CBM entries is not implemented yet.")
         # std file body:
         print("Reading block chain:", end="")
         chain = list(self.linkptrs_follow(entry.ts(), display=True, include_blocks=False))
@@ -2165,6 +2195,18 @@ class _cmdparttable(d64):
 
     def geos_get_border_block_ts(self) -> (int, int) or None:
         return None
+
+    def direntry_get_body(self, entry: DirEntry | int): # FIXME - yields file body in chunks!
+        """
+        yield file body chunk by chunk
+        """
+        raise Exception("Reading CMD partitions is not implemented yet.")
+
+    def direntry_delete(self, entry: DirEntry | int) -> None:
+        """
+        release all blocks of file and remove its directory entry
+        """
+        raise Exception("Deleting CMD partitions is not implemented yet.")
 
 class _cmdpartitionable(d64):
     """

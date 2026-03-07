@@ -16,6 +16,7 @@ Usage:
     d64.py [dir] IMAGE              display directory
     d64.py create IMAGE             create new image file
     d64.py checkfile IMAGE FILENUM  check blocks of file
+    d64.py read IMAGE FILENUM OUTFILE   extract file from image
     d64.py delete IMAGE FILENUM     delete file
     d64.py add IMAGE FILE           add file to image
     d64.py bam IMAGE                display block availability map
@@ -51,10 +52,29 @@ This mode checks the block allocation of a single file.
 The file must be specified by its directory index.
 """)
     parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
-    parser.add_argument("file_index", metavar="FILENUM", type=int, help="Dir index of file to check.")
+    parser.add_argument("entry_index", metavar="FILENUM", type=int, help="Dir index of file to check.")
     args = parser.parse_args(sys.argv[2:])
     image = d64util.DiskImage(args.image)
-    image.check_file(args.file_index)
+    image.direntry_check_allocation(args.entry_index)
+
+def mode_read():
+    parser = argparse.ArgumentParser(allow_abbrev = False, description =
+"""
+This mode extracts a single file from the image.
+The file must be specified by its directory index.
+""")
+    parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
+    parser.add_argument("entry_index", metavar="FILENUM", type=int, help="Dir index of file to extract.")
+    parser.add_argument("outfile", metavar="OUTFILENAME", help="Output file name.")
+    args = parser.parse_args(sys.argv[2:])
+    image = d64util.DiskImage(args.image)
+    body = image.direntry_get_body(args.entry_index)
+    # TODO - make outfile cli arg optional!
+    # TODO - use name from dir entry as default!
+    # TODO - if file exists, add "are you sure?" unless "-f" cli arg given!
+    with open(args.outfile, "wb") as file:
+        for chunk in body:
+            file.write(chunk)
 
 def mode_delete():
     parser = argparse.ArgumentParser(allow_abbrev = False, description =
@@ -63,10 +83,10 @@ This mode deletes a single file from the image.
 The file must be specified by its directory index.
 """)
     parser.add_argument("image", metavar="IMAGE.D64", help="Disk image file.")
-    parser.add_argument("file_index", metavar="FILENUM", type=int, help="Dir index of file to delete.")
+    parser.add_argument("entry_index", metavar="FILENUM", type=int, help="Dir index of file to delete.")
     args = parser.parse_args(sys.argv[2:])
     image = d64util.DiskImage(args.image, d64util.ImgMode.WRITEBACK)
-    image.delete_file(args.file_index)
+    image.direntry_delete(args.entry_index)
     image.writeback()   # flush to file
 
 def mode_add():
@@ -169,6 +189,8 @@ def _main():
             mode_create()
         elif mode == "checkfile":
             mode_checkfile()
+        elif mode == "read":
+            mode_read()
         elif mode == "delete":
             mode_delete()
         elif mode == "add":
