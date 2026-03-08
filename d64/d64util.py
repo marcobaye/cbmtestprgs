@@ -2200,13 +2200,29 @@ class _cmdparttable(d64):
         """
         yield file body chunk by chunk
         """
-        raise Exception("Reading CMD partitions is not implemented yet.")
+        if type(entry) is int:
+            entry = self.direntry_get(entry)
+        start_block = int.from_bytes(entry.bin30[19:22], "big") * 2 # convert 512-byte sectors to 256-byte blocks
+        partition_type = entry.type()
+        if partition_type == 2:
+            block_count = 683   # force correct size of 1541 partition
+        elif partition_type == 3:
+            block_count = 1366  # force correct size of 1571 partition
+        else:
+            block_count = int.from_bytes(entry.bin30[27:30], "big") * 2 # convert 512-byte sectors to 256-byte blocks
+        # calling self.imagefile.block_read() would use start+size of the
+        # current partition (which is the parttable at the end).
+        # so we access the image file directly:
+        offset = 256 * start_block
+        for idx in range(block_count):
+            yield self.imagefile.body[offset:offset+256]
+            offset += 256
 
     def direntry_delete(self, entry: DirEntry | int) -> None:
         """
         release all blocks of file and remove its directory entry
         """
-        raise Exception("Deleting CMD partitions is not implemented yet.")
+        sys.exit("Deleting CMD partitions is not implemented.")
 
 class _cmdpartitionable(d64):
     """
